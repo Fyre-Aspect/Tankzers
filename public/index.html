@@ -1,1 +1,52 @@
-<!-- public/index.html — canvas + HUD markup -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tankzers</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+    <div id="hud">
+        <div class="hud-box" id="hud-turn">Connecting.....</div>
+        <div class="hud-box" id="hud-wind">Wind:</div>
+        <div class="hud-box" id="hud-room"></div>
+    </div>
+
+    <div id="health">
+      <div class="hp-row"><span class="hp-label" id="me-label">You</span>
+        <div class="hp-bar"><div class="hp-fill" id="me-hp"></div></div>
+      </div>
+      <div class="hp-row"><span class="hp-label" id="opp-label">Opponent</span>
+        <div class="hp-bar"><div class="hp-fill opp" id="opp-hp"></div></div>
+      </div>
+    </div>
+
+    <div id="controls">
+      <label>Angle <span id="angle-val">45</span>°
+        <input type="range" id="angle" min="0" max="180" value="45" />
+      </label>
+      <label>Power <span id="power-val">60</span>
+        <input type="range" id="power" min="0" max="100" value="60" />
+      </label>
+      <button id="fire-btn" disabled>FIRE</button>
+    </div>
+  </div>
+
+
+    <div id="overlay">
+    <div class="panel">
+      <h1>Tankzers</h1>
+      <button id="create-btn">Create Room</button>
+      <div class="join">
+        <input type="text" id="join-code" maxlength="4" placeholder="CODE" />
+        <button id="join-btn">Join</button>
+      </div>
+      <p id="overlay-msg"></p>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="client.js"></script>
+</body>
+</html> 
