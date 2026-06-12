@@ -1,0 +1,13 @@
+{
+  "name": "tankzers",
+  "version": "1.0.0",
+  "description": "Turn-based 2D artillery game with real-time multiplayer.",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}
