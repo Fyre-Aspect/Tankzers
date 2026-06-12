@@ -1,15 +1,11 @@
 const path = require('path');
-const http = require ('http');
+const http = require('http');
 const express = require('express');
-const {Server} = require('socket.io');
-const Game = require('./game');
-const physics = require('./physics');
+const { Server } = require('socket.io');
+const { Game } = require('./game');
 
 const app = express();
-const server = http.createServer(app);
-const io = new Server(server);
-
-app.use(express.static(path.join(_dirname, '..', 'publci')));
+app.use(express.static(path.join(__dirname, '..', 'public')));
 
 const server = http.createServer(app);
 const io = new Server(server);
@@ -26,15 +22,6 @@ function makeRoomCode() {
     }
   } while (rooms.has(code));
   return code;
-}
-
-
-function startGame(room,code){
-    room.game = new Game(room.players);
-    for (const id of room.players){
-        io.to(id).emit('gameStart', {youId: id, code, ...room.game.state()});
-
-    }
 }
 
 function startGame(room, code) {
@@ -69,14 +56,14 @@ io.on('connection', (socket) => {
     startGame(room, code);
   });
 
-    socket.on('fire', ({angle, power}) => {
-        const code = socket.data.room;
-        const room = code && rooms.get(code);
-        if (!room || !room.game) {
-            socket.emit('errorMsg', {message: 'no active game.'});
-            return;
-        }
-        let result;
+  socket.on('fire', ({ angle, power }) => {
+    const code = socket.data.room;
+    const room = code && rooms.get(code);
+    if (!room || !room.game) {
+      socket.emit('errorMsg', { message: 'No active game.' });
+      return;
+    }
+    let result;
     try {
       result = room.game.fire(socket.id, Number(angle), Number(power));
     } catch (err) {
@@ -94,14 +81,14 @@ io.on('connection', (socket) => {
     }
 
     io.to(code).emit('shotResolved', {
-        shooterId: socket.id,
-        trajectory: result.trajectory,
-        impact: result.impact,
-        craterRadius: result.craterRadius,
-        terrain: result.terrain,
-        tanks: result.tanks,
-        damages: result.damages,
-        next,
+      shooterId: socket.id,
+      trajectory: result.trajectory,
+      impact: result.impact,
+      craterRadius: result.craterRadius,
+      terrain: result.terrain,
+      tanks: result.tanks,
+      damages: result.damages,
+      next,
     });
   });
 
@@ -115,9 +102,7 @@ io.on('connection', (socket) => {
   });
 });
 
-
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-    console.log('tankerz is running on port', PORT);
+  console.log(`Tankzers running on http://localhost:${PORT}`);
 });
-

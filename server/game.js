@@ -1,20 +1,24 @@
-const physics = require('./physics')
+const physics = require('./physics');
+
 const WORLD_WIDTH = 1200;
-const WORLD_HEIGHT = 800;
+const WORLD_HEIGHT = 600;
 
 function generateTerrain() {
-    const terrain = new Array(WORLD_WIDTH);
-    const base = WORLD_HEIGHT * 0.65;
-    const phase = Math.random() * Math.PI * 2;
-    for (let x = 0; x < WORLD_WIDTH; x++) {
-        const h = base + math.sin(x * 0.01 + phase) * 50 + Math.random() * 20;
-        terrain[x] = Math.floor(h);
-    }
-    return terrain;
+  const terrain = new Array(WORLD_WIDTH);
+  const base = WORLD_HEIGHT * 0.65;
+  const phase = Math.random() * Math.PI * 2;
+  for (let x = 0; x < WORLD_WIDTH; x++) {
+    const h =
+      base +
+      Math.sin(x * 0.008 + phase) * 60 +
+      Math.sin(x * 0.02 + phase * 2) * 25;
+    terrain[x] = Math.max(120, Math.min(WORLD_HEIGHT - 20, h));
+  }
+  return terrain;
 }
 
-function randomWind(){
-    return Math.round((Math.random() - 0.5) * 20);
+function randomWind() {
+  return Math.round((Math.random() * 2 - 1) * 10);
 }
 
 class Game {
@@ -35,10 +39,13 @@ class Game {
     }));
 
     this.turnIndex = 0;
-  }get activePlayerId() {
+  }
+
+  get activePlayerId() {
     return this.players[this.turnIndex];
   }
-aliveTanks() {
+
+  aliveTanks() {
     return this.tanks.filter((t) => t.alive);
   }
 
@@ -52,7 +59,8 @@ aliveTanks() {
       worldHeight: WORLD_HEIGHT,
     };
   }
-fire(shooterId, angle, power) {
+
+  fire(shooterId, angle, power) {
     if (shooterId !== this.activePlayerId) {
       throw new Error('Not your turn.');
     }
@@ -71,4 +79,4 @@ fire(shooterId, angle, power) {
   }
 }
 
-module.exports = {Game, WORLD_WIDTH, WORLD_HEIGHT};
+module.exports = { Game, WORLD_WIDTH, WORLD_HEIGHT };
