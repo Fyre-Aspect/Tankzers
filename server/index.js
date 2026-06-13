@@ -2,7 +2,7 @@ const path = require('path');
 const http = require('http');
 const express = require('express');
 const { Server } = require('socket.io');
-const { Game } = require('./game');
+const { Game, capacityFor } = require('./game');
 
 const app = express();
 app.use(express.static(path.join(__dirname, '..', 'public')));
@@ -25,19 +25,23 @@ function makeRoomCode() {
 }
 
 function startGame(room, code) {
-  room.game = new Game(room.players);
+  room.game = new Game(room.players, room.mode);
   for (const id of room.players) {
     io.to(id).emit('gameStart', { youId: id, code, ...room.game.state() });
   }
 }
 
 io.on('connection', (socket) => {
-  socket.on('createRoom', () => {
+  socket.on('createRoom', ({ mode }) => {
+    if (mode !== '1v1' && mode !== '2v2') {
+      socket.emit('errorMsg', { message: 'Invalid mode.' });
+      return;
+    }
     const code = makeRoomCode();
-    rooms.set(code, { players: [socket.id], game: null });
+    rooms.set(code, { mode, players: [socket.id], game: null });
     socket.data.room = code;
     socket.join(code);
-    socket.emit('roomCreated', { code });
+    socket.emit('roomCreated', { code, mode, capacity: capacityFor(mode) });
   });
 
   socket.on('joinRoom', ({ code }) => {
@@ -46,17 +50,23 @@ io.on('connection', (socket) => {
       socket.emit('errorMsg', { message: 'No room with that code.' });
       return;
     }
-    if (room.players.length >= 2) {
+    if (room.game || room.players.length >= capacityFor(room.mode)) {
       socket.emit('errorMsg', { message: 'Room is full.' });
       return;
     }
     room.players.push(socket.id);
     socket.data.room = code;
     socket.join(code);
-    startGame(room, code);
+    io.to(code).emit('lobbyUpdate', {
+      count: room.players.length,
+      capacity: capacityFor(room.mode),
+    });
+    if (room.players.length === capacityFor(room.mode)) {
+      startGame(room, code);
+    }
   });
 
-  socket.on('fire', ({ angle, power }) => {
+  socket.on('fire', ({ azimuth, elevation, power, weapon }) => {
     const code = socket.data.room;
     const room = code && rooms.get(code);
     if (!room || !room.game) {
@@ -65,29 +75,40 @@ io.on('connection', (socket) => {
     }
     let result;
     try {
-      result = room.game.fire(socket.id, Number(angle), Number(power));
+      result = room.game.fire(
+        socket.id,
+        Number(azimuth),
+        Number(elevation),
+        Number(power),
+        weapon
+      );
     } catch (err) {
       socket.emit('errorMsg', { message: err.message });
       return;
     }
 
-    const alive = room.game.aliveTanks();
+    const aliveTeams = room.game.aliveTeams();
     let next;
-    if (alive.length <= 1) {
-      next = { type: 'gameOver', winnerId: alive.length === 1 ? alive[0].id : null };
+    if (aliveTeams.size <= 1) {
+      next = { type: 'gameOver', winnerTeam: aliveTeams.size === 1 ? [...aliveTeams][0] : null };
     } else {
       room.game.advanceTurn();
-      next = { type: 'turn', activePlayerId: room.game.activePlayerId, wind: room.game.wind };
+      next = {
+        type: 'turn',
+        activePlayerId: room.game.activePlayerId,
+        wind: room.game.wind,
+        pickups: room.game.pickups,
+      };
     }
 
     io.to(code).emit('shotResolved', {
       shooterId: socket.id,
-      trajectory: result.trajectory,
-      impact: result.impact,
-      craterRadius: result.craterRadius,
-      terrain: result.terrain,
-      tanks: result.tanks,
+      weaponId: result.weaponId,
+      projectiles: result.projectiles,
+      heightmap: room.game.heightmap,
+      tanks: room.game.tanks,
       damages: result.damages,
+      collected: result.collected,
       next,
     });
   });
@@ -97,7 +118,7 @@ io.on('connection', (socket) => {
     if (!code) return;
     const room = rooms.get(code);
     if (!room) return;
-    socket.to(code).emit('opponentLeft', { message: 'Opponent disconnected. Match ended.' });
+    socket.to(code).emit('opponentLeft', { message: 'A player disconnected. Match ended.' });
     rooms.delete(code);
   });
 });

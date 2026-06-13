@@ -1,139 +1,130 @@
-const GRAVITY = 0.35;
-const POWER_SCALE = 0.32;
-const WIND_SCALE = 0.015;
-const TANK_RADIUS = 16;
-const BARREL_LENGTH = 24;
-const TURRET_HEIGHT = 10;
-const CRATER_RADIUS = 46;
-const BLAST_RADIUS = 78;
-const MAX_DAMAGE = 55;
-const MAX_STEPS = 4000;
+const GRAVITY = 0.05;
+const POWER_SCALE = 0.04;
+const WIND_SCALE = 0.0006;
+const TANK_RADIUS = 4;
+const TANK_CENTER_Y = 2;
+const MAX_STEPS = 6000;
+const MIN_HEIGHT = 0;
 
-function clamp(v, lo, hi) {
-  return Math.max(lo, Math.min(hi, v));
+function heightAt(world, hm, x, z) {
+  const { grid, cell } = world;
+  let i = Math.round(x / cell);
+  let j = Math.round(z / cell);
+  if (i < 0) i = 0; else if (i > grid - 1) i = grid - 1;
+  if (j < 0) j = 0; else if (j > grid - 1) j = grid - 1;
+  return hm[i * grid + j];
 }
 
-function carveCrater(terrain, cx, cy, radius, worldHeight) {
-  const from = Math.floor(cx - radius);
-  const to = Math.ceil(cx + radius);
-  for (let x = from; x <= to; x++) {
-    if (x < 0 || x >= terrain.length) continue;
-    const dx = x - cx;
-    const inside = radius * radius - dx * dx;
-    if (inside <= 0) continue;
-    const craterBottom = cy + Math.sqrt(inside);
-    if (craterBottom > terrain[x]) {
-      terrain[x] = Math.min(craterBottom, worldHeight);
-    }
-  }
-}
+function simulateProjectile(world, hm, tanks, shooterId, origin, velocity, wind) {
+  const { size } = world;
+  let x = origin.x, y = origin.y, z = origin.z;
+  let vx = velocity.x, vy = velocity.y, vz = velocity.z;
+  const ax = wind.x * WIND_SCALE;
+  const az = wind.z * WIND_SCALE;
 
-function applyDamage(tanks, ix, iy, blastRadius) {
-  const damages = [];
-  for (const tank of tanks) {
-    if (!tank.alive) continue;
-    const dist = Math.hypot(tank.x - ix, tank.y - iy);
-    if (dist > blastRadius) continue;
-    const dmg = Math.round(MAX_DAMAGE * (1 - dist / blastRadius));
-    if (dmg <= 0) continue;
-    tank.hp -= dmg;
-    if (tank.hp <= 0) {
-      tank.hp = 0;
-      tank.alive = false;
-    }
-    damages.push({ id: tank.id, amount: dmg, hp: tank.hp, dead: !tank.alive });
-  }
-  return damages;
-}
-
-function settleTanks(terrain, tanks) {
-  for (const tank of tanks) {
-    if (!tank.alive) continue;
-    const col = clamp(Math.round(tank.x), 0, terrain.length - 1);
-    tank.y = terrain[col];
-  }
-}
-
-function simulateShot(game, shooter, angle, power) {
-  const { WORLD_HEIGHT } = require('./game');
-  const { terrain, tanks, wind } = game;
-  const worldWidth = terrain.length;
-  const H = WORLD_HEIGHT;
-
-  const a = clamp(angle, 0, 180);
-  const p = clamp(power, 0, 100);
-  const rad = (a * Math.PI) / 180;
-
-  const pivotX = shooter.x;
-  const pivotY = shooter.y - TURRET_HEIGHT;
-  let x = pivotX + Math.cos(rad) * BARREL_LENGTH;
-  let y = pivotY - Math.sin(rad) * BARREL_LENGTH;
-
-  let vx = Math.cos(rad) * p * POWER_SCALE;
-  let vy = -Math.sin(rad) * p * POWER_SCALE;
-  const windAccel = wind * WIND_SCALE;
-
-  const trajectory = [{ x, y }];
-  let impactX = null;
-  let impactY = null;
+  const trajectory = [{ x, y, z }];
+  let impact = null;
+  let hitTankId = null;
 
   for (let step = 0; step < MAX_STEPS; step++) {
-    vx += windAccel;
-    vy += GRAVITY;
+    vx += ax;
+    vz += az;
+    vy -= GRAVITY;
     x += vx;
     y += vy;
-    trajectory.push({ x, y });
+    z += vz;
+    trajectory.push({ x, y, z });
 
-    let hit = false;
+    for (const t of tanks) {
+      if (!t.alive || t.id === shooterId) continue;
+      const dx = t.x - x;
+      const dy = t.y + TANK_CENTER_Y - y;
+      const dz = t.z - z;
+      if (dx * dx + dy * dy + dz * dz <= TANK_RADIUS * TANK_RADIUS) {
+        hitTankId = t.id;
+        impact = { x, y, z };
+        break;
+      }
+    }
+    if (impact) break;
 
-    for (const tank of tanks) {
-      if (!tank.alive || tank.id === shooter.id) continue;
-      if (Math.hypot(tank.x - x, tank.y - y) <= TANK_RADIUS) {
-        hit = true;
+    if (x >= 0 && x <= size && z >= 0 && z <= size) {
+      const h = heightAt(world, hm, x, z);
+      if (y <= h) {
+        impact = { x, y: h, z };
         break;
       }
     }
 
-    if (!hit && x >= 0 && x < worldWidth) {
-      const col = Math.floor(x);
-      if (y >= terrain[col]) hit = true;
-    }
-
-    if (hit) {
-      impactX = x;
-      impactY = y;
-      break;
-    }
-
-    if (y > H + 200) {
-      impactX = x;
-      impactY = y;
+    if (y < MIN_HEIGHT - 60) {
+      impact = { x, y, z };
       break;
     }
   }
 
-  if (impactX === null) {
-    impactX = x;
-    impactY = y;
-  }
-
-  const onMap = impactX >= 0 && impactX < worldWidth;
-  if (onMap) {
-    carveCrater(terrain, impactX, impactY, CRATER_RADIUS, H);
-  }
-  const damages = onMap ? applyDamage(tanks, impactX, impactY, BLAST_RADIUS) : [];
-  settleTanks(terrain, tanks);
-
-  return {
-    trajectory,
-    impact: { x: impactX, y: impactY },
-    craterRadius: CRATER_RADIUS,
-    blastRadius: BLAST_RADIUS,
-    terrain,
-    tanks,
-    damages,
-    onMap,
-  };
+  if (!impact) impact = { x, y, z };
+  return { trajectory, impact, hitTankId };
 }
 
-module.exports = { simulateShot };
+function carveCrater(world, hm, impact, radius) {
+  const { grid, cell } = world;
+  const ci = impact.x / cell;
+  const cj = impact.z / cell;
+  const cellRad = radius / cell;
+  const i0 = Math.max(0, Math.floor(ci - cellRad));
+  const i1 = Math.min(grid - 1, Math.ceil(ci + cellRad));
+  const j0 = Math.max(0, Math.floor(cj - cellRad));
+  const j1 = Math.min(grid - 1, Math.ceil(cj + cellRad));
+
+  for (let i = i0; i <= i1; i++) {
+    for (let j = j0; j <= j1; j++) {
+      const wx = i * cell;
+      const wz = j * cell;
+      const d2 = (wx - impact.x) ** 2 + (wz - impact.z) ** 2;
+      if (d2 > radius * radius) continue;
+      const craterFloor = impact.y - Math.sqrt(radius * radius - d2);
+      const idx = i * grid + j;
+      if (hm[idx] > craterFloor) {
+        hm[idx] = Math.max(MIN_HEIGHT, craterFloor);
+      }
+    }
+  }
+}
+
+function applyDamage(tanks, impact, radius, maxDamage) {
+  const damages = [];
+  for (const t of tanks) {
+    if (!t.alive) continue;
+    const dx = t.x - impact.x;
+    const dy = t.y + TANK_CENTER_Y - impact.y;
+    const dz = t.z - impact.z;
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (d > radius) continue;
+    const dmg = Math.round(maxDamage * (1 - d / radius));
+    if (dmg <= 0) continue;
+    t.hp -= dmg;
+    if (t.hp <= 0) {
+      t.hp = 0;
+      t.alive = false;
+    }
+    damages.push({ id: t.id, amount: dmg, hp: t.hp, dead: !t.alive });
+  }
+  return damages;
+}
+
+function settleTanks(world, hm, tanks) {
+  for (const t of tanks) {
+    if (!t.alive) continue;
+    t.y = heightAt(world, hm, t.x, t.z);
+  }
+}
+
+module.exports = {
+  POWER_SCALE,
+  TANK_CENTER_Y,
+  heightAt,
+  simulateProjectile,
+  carveCrater,
+  applyDamage,
+  settleTanks,
+};
