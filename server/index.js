@@ -34,6 +34,10 @@ function startGame(room, code) {
 
 io.on('connection', (socket) => {
   socket.on('createRoom', ({ mode }) => {
+    if (socket.data.room && rooms.has(socket.data.room)) {
+      socket.emit('errorMsg', { message: 'You are already in a room.' });
+      return;
+    }
     if (mode !== '1v1' && mode !== '2v2') {
       socket.emit('errorMsg', { message: 'Invalid mode.' });
       return;
@@ -46,6 +50,10 @@ io.on('connection', (socket) => {
   });
 
   socket.on('joinRoom', ({ code }) => {
+    if (socket.data.room && rooms.has(socket.data.room)) {
+      socket.emit('errorMsg', { message: 'You are already in a room.' });
+      return;
+    }
     const room = rooms.get(code);
     if (!room) {
       socket.emit('errorMsg', { message: 'No room with that code.' });
@@ -106,6 +114,10 @@ io.on('connection', (socket) => {
       collected: result.collected,
       next,
     });
+
+    if (next.type === 'gameOver') {
+      rooms.delete(code);
+    }
   });
 
   socket.on('disconnect', () => {
@@ -113,6 +125,22 @@ io.on('connection', (socket) => {
     if (!code) return;
     const room = rooms.get(code);
     if (!room) return;
+
+    if (!room.game) {
+      // Still in the lobby: drop just this player, keep the room open for others.
+      room.players = room.players.filter((id) => id !== socket.id);
+      if (room.players.length === 0) {
+        rooms.delete(code);
+      } else {
+        io.to(code).emit('lobbyUpdate', {
+          count: room.players.length,
+          capacity: capacityFor(room.mode),
+        });
+      }
+      return;
+    }
+
+    // Mid-match: the remaining players can't continue, so end it.
     socket.to(code).emit('opponentLeft', { message: 'A player disconnected. Match ended.' });
     rooms.delete(code);
   });

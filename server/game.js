@@ -127,6 +127,11 @@ class Game {
     if (!weapon) {
       throw new Error('Unknown weapon.');
     }
+    if (!Number.isFinite(angle) || !Number.isFinite(power)) {
+      throw new Error('Invalid shot parameters.');
+    }
+    angle = Math.max(0, Math.min(180, angle));
+    power = Math.max(5, Math.min(100, power));
     const ammo = shooter.weapons[weaponId];
     if (ammo === 0) {
       throw new Error('No ammo for that weapon.');
@@ -191,9 +196,11 @@ class Game {
   }
 
   advanceTurn() {
-    do {
+    for (let i = 0; i < this.players.length; i++) {
       this.turnIndex = (this.turnIndex + 1) % this.players.length;
-    } while (!this.tankOf(this.activePlayerId).alive);
+      const tank = this.tankOf(this.activePlayerId);
+      if (tank && tank.alive) break;
+    }
     this.wind = randomWind();
     this.maybeSpawnPickup();
   }

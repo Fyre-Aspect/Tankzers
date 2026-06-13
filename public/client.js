@@ -260,7 +260,7 @@ function buildTank(tank) {
 }
 
 function barrelAngleFor(tank) {
-  if (tank.id === state.youId && isMyTurn()) return Number(dom.angle.value);
+  if (tank.id === state.youId) return Number(dom.angle.value);
   return tank.team === 0 ? 50 : 130;
 }
 
@@ -401,7 +401,11 @@ for (const btn of document.querySelectorAll('.mode-btn')) {
 document.getElementById('create-btn').addEventListener('click', () => socket.emit('createRoom', { mode: selectedMode }));
 document.getElementById('join-btn').addEventListener('click', () => {
   const code = document.getElementById('join-code').value.trim().toUpperCase();
-  if (code.length === 4) socket.emit('joinRoom', { code });
+  if (code.length === 4) {
+    socket.emit('joinRoom', { code });
+  } else {
+    dom.overlayMsg.textContent = 'Enter a 4-character room code.';
+  }
 });
 
 // --- socket events ---
@@ -411,7 +415,14 @@ socket.on('roomCreated', ({ code, mode, capacity }) => {
 socket.on('lobbyUpdate', ({ count, capacity }) => {
   dom.overlayMsg.textContent = `Waiting for players… ${count}/${capacity}`;
 });
-socket.on('errorMsg', ({ message }) => { dom.overlayMsg.textContent = message; updateControls(); });
+socket.on('errorMsg', ({ message }) => {
+  if (state.world && dom.overlay.classList.contains('hidden')) {
+    pushLog(message);
+  } else {
+    dom.overlayMsg.textContent = message;
+  }
+  updateControls();
+});
 
 socket.on('gameStart', (data) => {
   state.youId = data.youId;
@@ -474,7 +485,7 @@ function applyPending() {
   if (next.type === 'gameOver') {
     state.gameOver = true;
     const me = state.tanks.find((t) => t.id === state.youId);
-    const won = me && me.alive && next.winnerTeam === me.team;
+    const won = me && next.winnerTeam === me.team;
     showOverlay(won ? 'Your team wins!' : next.winnerTeam === null ? 'Draw.' : 'Your team lost.', true);
   } else {
     state.activePlayerId = next.activePlayerId;

@@ -5,6 +5,7 @@ const TANK_RADIUS = 5;
 const TANK_CENTER_Y = 3;
 const MAX_STEPS = 6000;
 const MIN_HEIGHT = 0;
+const BOUNDS_MARGIN = 200;
 
 function heightAt(world, hm, x) {
   let i = Math.round(x);
@@ -50,6 +51,12 @@ function simulateProjectile(world, hm, tanks, shooterId, origin, velocity, wind)
     }
 
     if (y < MIN_HEIGHT - 60) {
+      impact = { x, y };
+      break;
+    }
+
+    // Projectile has escaped the playfield horizontally and won't return.
+    if (x < -BOUNDS_MARGIN || x > cols - 1 + BOUNDS_MARGIN) {
       impact = { x, y };
       break;
     }
