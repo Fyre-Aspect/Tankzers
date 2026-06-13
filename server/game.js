@@ -1,17 +1,15 @@
 const physics = require('./physics');
 
-const GRID = 64;
-const CELL = 4;
-const SIZE = (GRID - 1) * CELL;
-const WORLD = { grid: GRID, cell: CELL, size: SIZE };
+const COLS = 240;
+const WORLD = { cols: COLS, width: COLS };
 
-const TURRET_HEIGHT = 3;
-const BARREL_LENGTH = 4;
+const TURRET_HEIGHT = 5;
+const BARREL_LENGTH = 5;
 
 const WEAPONS = {
   standard: { id: 'standard', name: 'Standard', blastRadius: 16, damage: 34, projectiles: 1, spread: 0, powerMult: 1 },
-  big_bomb: { id: 'big_bomb', name: 'Big Bomb', blastRadius: 30, damage: 62, projectiles: 1, spread: 0, powerMult: 0.95 },
-  triple: { id: 'triple', name: 'Triple Shot', blastRadius: 12, damage: 22, projectiles: 3, spread: 8, powerMult: 1 },
+  big_bomb: { id: 'big_bomb', name: 'Big Bomb', blastRadius: 28, damage: 62, projectiles: 1, spread: 0, powerMult: 0.95 },
+  triple: { id: 'triple', name: 'Triple Shot', blastRadius: 11, damage: 22, projectiles: 3, spread: 6, powerMult: 1 },
 };
 
 const PICKUP_WEAPONS = ['big_bomb', 'triple'];
@@ -23,29 +21,22 @@ const PICKUP_CHANCE = 0.6;
 const TEAM_COLORS = ['#4ad9ff', '#ff7a4a'];
 
 function randomWind() {
-  return {
-    x: Math.round((Math.random() * 2 - 1) * 10),
-    z: Math.round((Math.random() * 2 - 1) * 10),
-  };
+  return Math.round((Math.random() * 2 - 1) * 10);
 }
 
-function generateHeightmap() {
-  const hm = new Array(GRID * GRID);
+function generateTerrain() {
+  const hm = new Array(COLS);
   const p1 = Math.random() * Math.PI * 2;
   const p2 = Math.random() * Math.PI * 2;
-  const p3 = Math.random() * Math.PI * 2;
-  for (let i = 0; i < GRID; i++) {
-    for (let j = 0; j < GRID; j++) {
-      const u = i / (GRID - 1);
-      const v = j / (GRID - 1);
-      let h =
-        18 +
-        Math.sin(u * Math.PI * 2 + p1) * 8 +
-        Math.sin(v * Math.PI * 3 + p2) * 6 +
-        Math.sin((u + v) * Math.PI * 2 + p3) * 5 +
-        Math.sin(u * Math.PI * 6) * Math.cos(v * Math.PI * 5) * 3;
-      hm[i * GRID + j] = h < 2 ? 2 : h;
-    }
+  const base = 38;
+  for (let i = 0; i < COLS; i++) {
+    const u = i / (COLS - 1);
+    let h =
+      base +
+      Math.sin(u * Math.PI * 2 + p1) * 16 +
+      Math.sin(u * Math.PI * 5 + p2) * 7 +
+      Math.sin(u * Math.PI * 9) * 3;
+    hm[i] = h < 6 ? 6 : h;
   }
   return hm;
 }
@@ -53,30 +44,23 @@ function generateHeightmap() {
 function spawnLayout(mode) {
   if (mode === '1v1') {
     return [
-      { team: 0, fx: 0.18, fz: 0.5 },
-      { team: 1, fx: 0.82, fz: 0.5 },
+      { team: 0, fx: 0.15 },
+      { team: 1, fx: 0.85 },
     ];
   }
   return [
-    { team: 0, fx: 0.15, fz: 0.28 },
-    { team: 1, fx: 0.85, fz: 0.28 },
-    { team: 0, fx: 0.15, fz: 0.72 },
-    { team: 1, fx: 0.85, fz: 0.72 },
+    { team: 0, fx: 0.10 },
+    { team: 1, fx: 0.76 },
+    { team: 0, fx: 0.24 },
+    { team: 1, fx: 0.90 },
   ];
-}
-
-function dirFromAngles(azDeg, elDeg) {
-  const az = (azDeg * Math.PI) / 180;
-  const el = (elDeg * Math.PI) / 180;
-  const ch = Math.cos(el);
-  return { x: ch * Math.cos(az), y: Math.sin(el), z: ch * Math.sin(az) };
 }
 
 class Game {
   constructor(playerIds, mode) {
     this.mode = mode;
     this.world = WORLD;
-    this.heightmap = generateHeightmap();
+    this.heightmap = generateTerrain();
     this.wind = randomWind();
     this.players = [...playerIds];
     this.pickups = [];
@@ -85,15 +69,13 @@ class Game {
     const layout = spawnLayout(mode);
     this.tanks = playerIds.map((id, i) => {
       const s = layout[i];
-      const x = s.fx * SIZE;
-      const z = s.fz * SIZE;
+      const x = s.fx * (COLS - 1);
       return {
         id,
         team: s.team,
         name: `P${i + 1}`,
         x,
-        z,
-        y: physics.heightAt(WORLD, this.heightmap, x, z),
+        y: physics.heightAt(WORLD, this.heightmap, x),
         hp: 100,
         alive: true,
         color: TEAM_COLORS[s.team],
@@ -133,7 +115,7 @@ class Game {
     };
   }
 
-  fire(shooterId, azimuth, elevation, power, weaponId) {
+  fire(shooterId, angle, power, weaponId) {
     if (shooterId !== this.activePlayerId) {
       throw new Error('Not your turn.');
     }
@@ -157,13 +139,13 @@ class Game {
 
     for (let k = 0; k < weapon.projectiles; k++) {
       const offset = (k - (weapon.projectiles - 1) / 2) * weapon.spread;
-      const dir = dirFromAngles(azimuth + offset, elevation);
+      const rad = ((angle + offset) * Math.PI) / 180;
+      const dir = { x: Math.cos(rad), y: Math.sin(rad) };
       const origin = {
         x: shooter.x + dir.x * BARREL_LENGTH,
         y: shooter.y + TURRET_HEIGHT + dir.y * BARREL_LENGTH,
-        z: shooter.z + dir.z * BARREL_LENGTH,
       };
-      const velocity = { x: dir.x * speed, y: dir.y * speed, z: dir.z * speed };
+      const velocity = { x: dir.x * speed, y: dir.y * speed };
 
       const shot = physics.simulateProjectile(
         this.world,
@@ -199,8 +181,8 @@ class Game {
     for (let n = this.pickups.length - 1; n >= 0; n--) {
       const pk = this.pickups[n];
       const dx = pk.x - impact.x;
-      const dz = pk.z - impact.z;
-      if (dx * dx + dz * dz <= PICKUP_RADIUS * PICKUP_RADIUS) {
+      const dy = pk.y - impact.y;
+      if (dx * dx + dy * dy <= PICKUP_RADIUS * PICKUP_RADIUS) {
         shooter.weapons[pk.weapon] += PICKUP_AMMO;
         collected.push({ tankId: shooter.id, weapon: pk.weapon, ammo: shooter.weapons[pk.weapon] });
         this.pickups.splice(n, 1);
@@ -219,15 +201,12 @@ class Game {
   maybeSpawnPickup() {
     if (this.pickups.length >= MAX_PICKUPS) return;
     if (Math.random() > PICKUP_CHANCE) return;
-    const x = (0.15 + Math.random() * 0.7) * SIZE;
-    const z = (0.1 + Math.random() * 0.8) * SIZE;
-    const weapon = PICKUP_WEAPONS[Math.floor(Math.random() * PICKUP_WEAPONS.length)];
+    const x = (0.15 + Math.random() * 0.7) * (COLS - 1);
     this.pickups.push({
       id: ++this.pickupSeq,
       x,
-      z,
-      y: physics.heightAt(this.world, this.heightmap, x, z),
-      weapon,
+      y: physics.heightAt(this.world, this.heightmap, x),
+      weapon: PICKUP_WEAPONS[Math.floor(Math.random() * PICKUP_WEAPONS.length)],
     });
   }
 }

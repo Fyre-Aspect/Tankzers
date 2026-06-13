@@ -5,6 +5,7 @@ const { Server } = require('socket.io');
 const { Game, capacityFor } = require('./game');
 
 const app = express();
+app.get('/favicon.ico', (req, res) => res.status(204).end());
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 const server = http.createServer(app);
@@ -66,7 +67,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('fire', ({ azimuth, elevation, power, weapon }) => {
+  socket.on('fire', ({ angle, power, weapon }) => {
     const code = socket.data.room;
     const room = code && rooms.get(code);
     if (!room || !room.game) {
@@ -75,13 +76,7 @@ io.on('connection', (socket) => {
     }
     let result;
     try {
-      result = room.game.fire(
-        socket.id,
-        Number(azimuth),
-        Number(elevation),
-        Number(power),
-        weapon
-      );
+      result = room.game.fire(socket.id, Number(angle), Number(power), weapon);
     } catch (err) {
       socket.emit('errorMsg', { message: err.message });
       return;
