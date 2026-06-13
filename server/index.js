@@ -75,6 +75,27 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('moveTo', ({ x }) => {
+    const code = socket.data.room;
+    const room = code && rooms.get(code);
+    if (!room || !room.game) return;
+    let result;
+    try {
+      result = room.game.moveTo(socket.id, Number(x));
+    } catch (err) {
+      socket.emit('errorMsg', { message: err.message });
+      return;
+    }
+    io.to(code).emit('tankMoved', {
+      id: result.id,
+      x: result.x,
+      y: result.y,
+      fuel: result.fuel,
+      collected: result.collected,
+      pickups: result.pickups,
+    });
+  });
+
   socket.on('fire', ({ angle, power, weapon }) => {
     const code = socket.data.room;
     const room = code && rooms.get(code);

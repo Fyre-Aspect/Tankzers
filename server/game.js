@@ -6,17 +6,26 @@ const WORLD = { cols: COLS, width: COLS };
 const TURRET_HEIGHT = 5;
 const BARREL_LENGTH = 5;
 
+// How far a tank can drive per turn (~2 seconds of driving on the client).
+const MOVE_RANGE = 44;
+const TANK_GAP = 11;
+
 const WEAPONS = {
   standard: { id: 'standard', name: 'Standard', blastRadius: 16, damage: 34, projectiles: 1, spread: 0, powerMult: 1 },
-  big_bomb: { id: 'big_bomb', name: 'Big Bomb', blastRadius: 28, damage: 62, projectiles: 1, spread: 0, powerMult: 0.95 },
-  triple: { id: 'triple', name: 'Triple Shot', blastRadius: 11, damage: 22, projectiles: 3, spread: 6, powerMult: 1 },
+  sniper:   { id: 'sniper',   name: 'Sniper',   blastRadius: 9,  damage: 50, projectiles: 1, spread: 0, powerMult: 1.55 },
+  big_bomb: { id: 'big_bomb', name: 'Big Bomb', blastRadius: 30, damage: 62, projectiles: 1, spread: 0, powerMult: 0.95 },
+  triple:   { id: 'triple',   name: 'Triple',   blastRadius: 11, damage: 22, projectiles: 3, spread: 5, powerMult: 1 },
+  cluster:  { id: 'cluster',  name: 'Cluster',  blastRadius: 9,  damage: 16, projectiles: 1, spread: 0, powerMult: 1,
+              cluster: { count: 5, span: 34, radius: 12, damage: 26 } },
+  roller:   { id: 'roller',   name: 'Roller',   blastRadius: 18, damage: 42, projectiles: 1, spread: 0, powerMult: 1,
+              roller: { maxDist: 48 } },
 };
 
-const PICKUP_WEAPONS = ['big_bomb', 'triple'];
+const PICKUP_WEAPONS = ['big_bomb', 'triple', 'cluster', 'roller', 'sniper'];
 const PICKUP_AMMO = 2;
 const PICKUP_RADIUS = 9;
-const MAX_PICKUPS = 3;
-const PICKUP_CHANCE = 0.6;
+const MAX_PICKUPS = 4;
+const PICKUP_CHANCE = 0.7;
 
 const TEAM_COLORS = ['#4ad9ff', '#ff7a4a'];
 
@@ -78,12 +87,15 @@ class Game {
         y: physics.heightAt(WORLD, this.heightmap, x),
         hp: 100,
         alive: true,
+        fuel: 0,
         color: TEAM_COLORS[s.team],
-        weapons: { standard: -1, big_bomb: 0, triple: 0 },
+        weapons: { standard: -1, sniper: 0, big_bomb: 0, triple: 0, cluster: 0, roller: 0 },
       };
     });
 
     this.turnIndex = 0;
+    const first = this.tankOf(this.activePlayerId);
+    if (first) first.fuel = MOVE_RANGE;
   }
 
   get activePlayerId() {
@@ -112,9 +124,43 @@ class Game {
       activePlayerId: this.activePlayerId,
       pickups: this.pickups,
       weapons: WEAPONS,
+      moveRange: MOVE_RANGE,
     };
   }
 
+  // --- driving ----------------------------------------------------------
+  moveTo(playerId, targetX) {
+    if (playerId !== this.activePlayerId) {
+      throw new Error('Not your turn.');
+    }
+    const t = this.tankOf(playerId);
+    if (!t || !t.alive) throw new Error('Tank is not in play.');
+    if (!Number.isFinite(targetX)) throw new Error('Invalid move.');
+
+    let nx = physics.clampX(this.world, targetX);
+    const dir = Math.sign(nx - t.x);
+    if (dir !== 0) {
+      // Limit travel to the remaining fuel for this turn.
+      if (Math.abs(nx - t.x) > t.fuel) nx = t.x + dir * t.fuel;
+      // Don't drive through other living tanks.
+      for (const o of this.tanks) {
+        if (o === t || !o.alive) continue;
+        if (dir > 0 && o.x > t.x && o.x - TANK_GAP < nx) nx = Math.min(nx, o.x - TANK_GAP);
+        if (dir < 0 && o.x < t.x && o.x + TANK_GAP > nx) nx = Math.max(nx, o.x + TANK_GAP);
+      }
+      nx = physics.clampX(this.world, nx);
+      const moved = Math.abs(nx - t.x);
+      t.fuel = Math.max(0, t.fuel - moved);
+      t.x = nx;
+      t.y = physics.heightAt(this.world, this.heightmap, nx);
+    }
+
+    const collected = [];
+    this.collectPickupsNear(t.x, t, collected);
+    return { id: t.id, x: t.x, y: t.y, fuel: t.fuel, collected, pickups: this.pickups };
+  }
+
+  // --- firing -----------------------------------------------------------
   fire(shooterId, angle, power, weaponId) {
     if (shooterId !== this.activePlayerId) {
       throw new Error('Not your turn.');
@@ -138,7 +184,7 @@ class Game {
     }
 
     const projectiles = [];
-    const damages = [];
+    const rawDamages = [];
     const collected = [];
     const speed = power * physics.POWER_SCALE * weapon.powerMult;
 
@@ -153,23 +199,38 @@ class Game {
       const velocity = { x: dir.x * speed, y: dir.y * speed };
 
       const shot = physics.simulateProjectile(
-        this.world,
-        this.heightmap,
-        this.tanks,
-        shooterId,
-        origin,
-        velocity,
-        this.wind
+        this.world, this.heightmap, this.tanks, shooterId, origin, velocity, this.wind
       );
-      physics.carveCrater(this.world, this.heightmap, shot.impact, weapon.blastRadius);
-      const hits = physics.applyDamage(this.tanks, shot.impact, weapon.blastRadius, weapon.damage);
-      for (const h of hits) damages.push(h);
-      this.collectPickups(shot.impact, shooter, collected);
+
+      let trajectory = shot.trajectory;
+      let impact = shot.impact;
+      let subImpacts = null;
+
+      if (weapon.roller) {
+        const roll = physics.rollAlongTerrain(this.world, this.heightmap, impact, weapon.roller.maxDist);
+        if (roll.path.length) trajectory = trajectory.concat(roll.path);
+        impact = { x: roll.x, y: roll.y };
+        physics.carveCrater(this.world, this.heightmap, impact, weapon.blastRadius);
+        for (const h of physics.applyDamage(this.tanks, impact, weapon.blastRadius, weapon.damage)) rawDamages.push(h);
+      } else if (weapon.cluster) {
+        subImpacts = this.clusterImpacts(impact, weapon.cluster);
+        for (const si of subImpacts) {
+          physics.carveCrater(this.world, this.heightmap, si, si.radius);
+          for (const h of physics.applyDamage(this.tanks, si, si.radius, weapon.cluster.damage)) rawDamages.push(h);
+        }
+      } else {
+        physics.carveCrater(this.world, this.heightmap, impact, weapon.blastRadius);
+        for (const h of physics.applyDamage(this.tanks, impact, weapon.blastRadius, weapon.damage)) rawDamages.push(h);
+      }
+
+      this.collectPickupsNear(impact.x, shooter, collected);
 
       projectiles.push({
-        trajectory: shot.trajectory,
-        impact: shot.impact,
+        trajectory,
+        impact,
         blastRadius: weapon.blastRadius,
+        kind: weaponId,
+        subImpacts,
       });
     }
 
@@ -179,17 +240,25 @@ class Game {
       shooter.weapons[weaponId] = ammo - 1;
     }
 
-    return { projectiles, damages, collected, weaponId };
+    return { projectiles, damages: mergeDamages(rawDamages), collected, weaponId };
   }
 
-  collectPickups(impact, shooter, collected) {
+  clusterImpacts(impact, cfg) {
+    const out = [];
+    for (let i = 0; i < cfg.count; i++) {
+      const t = cfg.count === 1 ? 0 : i / (cfg.count - 1) - 0.5;
+      const x = physics.clampX(this.world, impact.x + t * cfg.span);
+      out.push({ x, y: physics.heightAt(this.world, this.heightmap, x), radius: cfg.radius });
+    }
+    return out;
+  }
+
+  collectPickupsNear(x, tank, collected) {
     for (let n = this.pickups.length - 1; n >= 0; n--) {
       const pk = this.pickups[n];
-      const dx = pk.x - impact.x;
-      const dy = pk.y - impact.y;
-      if (dx * dx + dy * dy <= PICKUP_RADIUS * PICKUP_RADIUS) {
-        shooter.weapons[pk.weapon] += PICKUP_AMMO;
-        collected.push({ tankId: shooter.id, weapon: pk.weapon, ammo: shooter.weapons[pk.weapon] });
+      if (Math.abs(pk.x - x) <= PICKUP_RADIUS) {
+        tank.weapons[pk.weapon] += PICKUP_AMMO;
+        collected.push({ tankId: tank.id, weapon: pk.weapon, ammo: tank.weapons[pk.weapon] });
         this.pickups.splice(n, 1);
       }
     }
@@ -201,6 +270,8 @@ class Game {
       const tank = this.tankOf(this.activePlayerId);
       if (tank && tank.alive) break;
     }
+    const next = this.tankOf(this.activePlayerId);
+    if (next) next.fuel = MOVE_RANGE;
     this.wind = randomWind();
     this.maybeSpawnPickup();
   }
@@ -208,7 +279,7 @@ class Game {
   maybeSpawnPickup() {
     if (this.pickups.length >= MAX_PICKUPS) return;
     if (Math.random() > PICKUP_CHANCE) return;
-    const x = (0.15 + Math.random() * 0.7) * (COLS - 1);
+    const x = (0.12 + Math.random() * 0.76) * (COLS - 1);
     this.pickups.push({
       id: ++this.pickupSeq,
       x,
@@ -216,6 +287,21 @@ class Game {
       weapon: PICKUP_WEAPONS[Math.floor(Math.random() * PICKUP_WEAPONS.length)],
     });
   }
+}
+
+function mergeDamages(raw) {
+  const byId = new Map();
+  for (const d of raw) {
+    const cur = byId.get(d.id);
+    if (cur) {
+      cur.amount += d.amount;
+      cur.hp = d.hp;
+      cur.dead = cur.dead || d.dead;
+    } else {
+      byId.set(d.id, { ...d });
+    }
+  }
+  return [...byId.values()];
 }
 
 function capacityFor(mode) {

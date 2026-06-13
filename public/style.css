@@ -7,6 +7,9 @@ html, body {
   background: #05060f;
   color: #e6edf3;
   font-family: system-ui, sans-serif;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 #scene {
@@ -27,18 +30,21 @@ html, body {
 }
 
 .hud-box {
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(8, 12, 24, 0.55);
+  backdrop-filter: blur(6px);
   padding: 8px 14px;
-  border-radius: 6px;
+  border-radius: 8px;
   font-size: 14px;
   font-weight: 600;
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+#hud-turn { color: #ffd24a; }
 #wind-arrow { display: inline-block; font-size: 16px; }
 
 #teams {
   position: fixed;
-  top: 58px;
+  top: 60px;
   left: 12px;
   display: flex;
   flex-direction: column;
@@ -46,8 +52,8 @@ html, body {
   pointer-events: none;
 }
 
-.hp-row { display: flex; align-items: center; gap: 8px; }
-.hp-name { width: 78px; font-size: 12px; font-weight: 600; }
+.hp-row { display: flex; align-items: center; gap: 8px; transition: opacity 0.3s; }
+.hp-name { width: 80px; font-size: 12px; font-weight: 600; }
 
 .hp-bar {
   width: 150px;
@@ -66,10 +72,11 @@ html, body {
 
 .hp-row.dead { opacity: 0.4; }
 .hp-row.active .hp-name::after { content: ' ◄'; color: #ffd24a; }
+.hp-row.active { filter: drop-shadow(0 0 6px rgba(255, 210, 74, 0.4)); }
 
 #log {
   position: fixed;
-  top: 58px;
+  top: 60px;
   right: 12px;
   width: 240px;
   text-align: right;
@@ -77,56 +84,125 @@ html, body {
   pointer-events: none;
 }
 .log-line {
-  background: rgba(0,0,0,0.45);
+  background: rgba(8, 12, 24, 0.5);
   padding: 4px 10px;
   border-radius: 5px;
   margin-bottom: 4px;
   display: inline-block;
+  animation: slideIn 0.25s ease;
 }
+@keyframes slideIn { from { opacity: 0; transform: translateX(12px); } to { opacity: 1; transform: none; } }
 
+/* drive pad (bottom-left) */
+#drive {
+  position: fixed;
+  bottom: 18px;
+  left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+}
+.drive-row { display: flex; gap: 12px; }
+.drive-btn {
+  width: 62px;
+  height: 62px;
+  font-size: 26px;
+  font-weight: 700;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 16px;
+  background: rgba(20, 26, 40, 0.78);
+  color: #e6edf3;
+  cursor: pointer;
+  touch-action: none;
+  transition: transform 0.08s, background 0.15s;
+}
+.drive-btn:not(:disabled):active { transform: scale(0.92); background: #2d3650; }
+.drive-btn:disabled { opacity: 0.32; cursor: not-allowed; }
+
+.fuel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(8, 12, 24, 0.55);
+  padding: 6px 10px;
+  border-radius: 8px;
+}
+.fuel-label { font-size: 11px; font-weight: 700; letter-spacing: 1px; color: #9fb0c4; }
+.fuel-bar {
+  width: 96px;
+  height: 9px;
+  background: #21262d;
+  border-radius: 5px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.1);
+}
+.fuel-fill { height: 100%; width: 100%; background: #39d353; transition: width 0.08s linear, background 0.2s; }
+
+/* main control bar (bottom-center) */
 #controls {
   position: fixed;
-  bottom: 14px;
+  bottom: 18px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
   align-items: flex-end;
   gap: 16px;
-  background: rgba(0, 0, 0, 0.62);
-  padding: 12px 18px;
-  border-radius: 10px;
+  background: rgba(8, 12, 24, 0.62);
+  backdrop-filter: blur(8px);
+  padding: 14px 20px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.08);
 }
 
-.ctrl { display: flex; flex-direction: column; gap: 5px; }
-.ctrl label { font-size: 12px; }
-.ctrl input[type="range"] { width: 150px; }
+.ctrl { display: flex; flex-direction: column; gap: 6px; }
+.ctrl label { font-size: 12px; color: #9fb0c4; }
+.ctrl label span { color: #e6edf3; font-weight: 700; }
+.ctrl input[type="range"] {
+  width: 150px;
+  accent-color: #4ad9ff;
+  cursor: pointer;
+}
 
-#weapons { flex-direction: row; gap: 6px; align-items: stretch; }
+.ctrl-weapons { max-width: 320px; }
+#weapons { display: flex; flex-wrap: wrap; gap: 6px; align-items: stretch; }
 
 .weapon-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 7px 10px;
   font-size: 12px;
   font-weight: 600;
   border: 1px solid #30363d;
-  border-radius: 6px;
+  border-radius: 7px;
   background: #161b22;
   color: #e6edf3;
   cursor: pointer;
   white-space: nowrap;
+  transition: transform 0.08s, border-color 0.15s;
 }
+.weapon-btn:active { transform: scale(0.95); }
+.weapon-btn b { font-weight: 700; }
+.weapon-btn .wb-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; box-shadow: 0 0 6px currentColor; }
 .weapon-btn.selected { border-color: #ffd24a; background: #2a2410; color: #ffd24a; }
 
 #fire-btn {
-  padding: 12px 30px;
-  font-size: 16px;
-  font-weight: 700;
-  background: #f85149;
+  padding: 14px 32px;
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  background: linear-gradient(180deg, #ff6a5e, #f85149);
   color: #fff;
   border: none;
-  border-radius: 8px;
+  border-radius: 10px;
   cursor: pointer;
+  box-shadow: 0 4px 14px rgba(248, 81, 73, 0.4);
+  transition: transform 0.08s, box-shadow 0.15s;
 }
-#fire-btn:disabled { background: #444c56; cursor: not-allowed; }
+#fire-btn:not(:disabled):hover { box-shadow: 0 6px 20px rgba(248, 81, 73, 0.6); }
+#fire-btn:not(:disabled):active { transform: scale(0.95); }
+#fire-btn:disabled { background: #444c56; box-shadow: none; cursor: not-allowed; }
 
 #overlay {
   position: fixed;
@@ -143,9 +219,10 @@ html, body {
   background: #161b22;
   border: 1px solid #30363d;
   padding: 36px;
-  border-radius: 12px;
+  border-radius: 14px;
   text-align: center;
   width: 340px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
 }
 .panel h1 { margin-bottom: 22px; }
 .panel h1 .dim { color: #4ad9ff; }
@@ -208,9 +285,18 @@ html, body {
 
 #hint {
   position: fixed;
-  bottom: 14px;
-  right: 14px;
-  font-size: 12px;
-  color: rgba(255,255,255,0.4);
+  bottom: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  color: rgba(255,255,255,0.35);
   pointer-events: none;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  #controls { gap: 10px; padding: 10px 12px; flex-wrap: wrap; max-width: 94vw; justify-content: center; }
+  .ctrl input[type="range"] { width: 110px; }
+  #hint { display: none; }
+  #log { width: 170px; font-size: 11px; }
 }

@@ -7,6 +7,12 @@ const MAX_STEPS = 6000;
 const MIN_HEIGHT = 0;
 const BOUNDS_MARGIN = 200;
 
+function clampX(world, x) {
+  if (x < 0) return 0;
+  if (x > world.cols - 1) return world.cols - 1;
+  return x;
+}
+
 function heightAt(world, hm, x) {
   let i = Math.round(x);
   if (i < 0) i = 0; else if (i > world.cols - 1) i = world.cols - 1;
@@ -66,6 +72,32 @@ function simulateProjectile(world, hm, tanks, shooterId, origin, velocity, wind)
   return { trajectory, impact, hitTankId };
 }
 
+// A roller settles by following the terrain downhill from its impact point.
+// Returns the resting point plus the ground path travelled (for animation).
+function rollAlongTerrain(world, hm, impact, maxDist) {
+  const STEP = 0.8;
+  let x = clampX(world, impact.x);
+  let travelled = 0;
+  const path = [];
+  let guard = 0;
+  while (travelled < maxDist && guard++ < 4000) {
+    const hHere = heightAt(world, hm, x);
+    const hL = heightAt(world, hm, x - STEP);
+    const hR = heightAt(world, hm, x + STEP);
+    // Roll toward the lower neighbour; stop on a flat spot or in a basin.
+    if (Math.abs(hL - hR) < 0.04) break;
+    const dir = hL < hR ? -1 : 1;
+    const ahead = heightAt(world, hm, x + dir * STEP);
+    if (ahead > hHere + 0.08) break; // would have to climb — settle here
+    const nx = clampX(world, x + dir * STEP);
+    if (nx === x) break; // hit a wall
+    x = nx;
+    travelled += STEP;
+    path.push({ x, y: heightAt(world, hm, x) });
+  }
+  return { x, y: heightAt(world, hm, x), path };
+}
+
 function carveCrater(world, hm, impact, radius) {
   const i0 = Math.max(0, Math.floor(impact.x - radius));
   const i1 = Math.min(world.cols - 1, Math.ceil(impact.x + radius));
@@ -110,8 +142,10 @@ function settleTanks(world, hm, tanks) {
 module.exports = {
   POWER_SCALE,
   TANK_CENTER_Y,
+  clampX,
   heightAt,
   simulateProjectile,
+  rollAlongTerrain,
   carveCrater,
   applyDamage,
   settleTanks,

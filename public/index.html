@@ -2,13 +2,14 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Tankzers 3D</title>
   <link rel="stylesheet" href="style.css" />
   <script type="importmap">
     {
       "imports": {
-        "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
       }
     }
   </script>
@@ -26,6 +27,18 @@
 
   <div id="log"></div>
 
+  <!-- left-hand drive pad (also works with A / D / arrow keys) -->
+  <div id="drive">
+    <div class="drive-row">
+      <button class="drive-btn" id="drive-left" aria-label="Drive left">◄</button>
+      <button class="drive-btn" id="drive-right" aria-label="Drive right">►</button>
+    </div>
+    <div class="fuel">
+      <span class="fuel-label">FUEL</span>
+      <div class="fuel-bar"><div class="fuel-fill" id="fuel-fill"></div></div>
+    </div>
+  </div>
+
   <div id="controls">
     <div class="ctrl">
       <label>Angle <span id="angle-val">45</span>°</label>
@@ -35,7 +48,10 @@
       <label>Power <span id="power-val">60</span></label>
       <input type="range" id="power" min="5" max="100" value="60" />
     </div>
-    <div class="ctrl" id="weapons"></div>
+    <div class="ctrl ctrl-weapons">
+      <label>Weapon</label>
+      <div id="weapons"></div>
+    </div>
     <button id="fire-btn" disabled>FIRE</button>
   </div>
 
@@ -55,7 +71,7 @@
     </div>
   </div>
 
-  <div id="hint">Scroll to zoom</div>
+  <div id="hint">Drag the battlefield to aim · scroll to zoom · A/D to drive</div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script type="module" src="client.js"></script>
