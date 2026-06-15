@@ -1,15 +1,19 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js';
+import { KITS, SKINS, TANK_COLORS, WEAPON_FX, defaultProfile, normalizeProfile } from './data.js';
+import * as FB from './firebase-config.js';
 
 const socket = io();
 
+// ======================================================================
+//  DOM
+// ======================================================================
 const dom = {
   scene: document.getElementById('scene'),
   overlay: document.getElementById('overlay'),
-  overlayMsg: document.getElementById('overlay-msg'),
-  panel: document.querySelector('.panel'),
   hudTurn: document.getElementById('hud-turn'),
+  hudBiome: document.getElementById('hud-biome'),
   hudRoom: document.getElementById('hud-room'),
   windArrow: document.getElementById('wind-arrow'),
   windMag: document.getElementById('wind-mag'),
@@ -26,19 +30,32 @@ const dom = {
   driveRight: document.getElementById('drive-right'),
 };
 
+function $(id) { return document.getElementById(id); }
+function showScreen(id) {
+  dom.overlay.classList.remove('hidden');
+  for (const s of document.querySelectorAll('.screen')) s.classList.toggle('active', s.id === id);
+}
+function hideOverlay() { dom.overlay.classList.add('hidden'); }
+
+// ======================================================================
+//  Game state
+// ======================================================================
 const state = {
   youId: null,
   mode: null,
   world: null,
   heightmap: null,
   tanks: [],
+  props: [],
   wind: 0,
   activePlayerId: null,
   pickups: [],
   weaponDefs: null,
   currentWeapon: 'standard',
   gameOver: false,
-  moveRange: 44,
+  moveRange: 60,
+  maxHp: 100,
+  biome: null,
 };
 
 let selectedMode = '1v1';
@@ -46,15 +63,14 @@ let anim = null;
 let pending = null;
 
 const TERRAIN_DEPTH = 30;
-const BASE_Y = -70;        // bottom of the terrain slab (fills the lower screen)
-const STEP_RATE = 90;      // trajectory steps per second
-const BOOM_TIME = 0.5;     // explosion seconds
-const VIEW_WIDTH = 250;    // ortho world units across at zoom 1
+const BASE_Y = -70;
+const STEP_RATE = 90;
+const BOOM_TIME = 0.5;
+const VIEW_WIDTH = 290;
 const TURRET_Y = 4.4;
-const MOVE_SPEED = 22;     // world units / second while driving
+const MOVE_SPEED = 26;
 const POWER_PER_UNIT = 1.4;
 
-// Mirror of the server projectile integrator, used for the live aim preview.
 const PHYS = { GRAVITY: 0.06, POWER_SCALE: 0.05, WIND_SCALE: 0.0008 };
 const BARREL_LEN = 5;
 
@@ -63,98 +79,147 @@ let camX = 120;
 let targetZoom = 1;
 let shake = 0;
 
-// driving prediction (active local player)
 let driveDir = 0;
 let localTargetX = 0;
 let localFuel = 0;
 let lastMoveEmit = 0;
 
-const WEAPON_FX = {
-  standard: { proj: 0xffb030, boom: 0xff8a2a },
-  sniper:   { proj: 0x9fe8ff, boom: 0xbfefff },
-  big_bomb: { proj: 0xff5a2a, boom: 0xff6a2a },
-  triple:   { proj: 0xffd24a, boom: 0xffd24a },
-  cluster:  { proj: 0xff5ad2, boom: 0xff7ad2 },
-  roller:   { proj: 0x8aff6a, boom: 0x9aff7a },
-};
-
-// --- renderer / scene ---
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+// ======================================================================
+//  Renderer / scene
+// ======================================================================
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.domElement.style.touchAction = 'none';
 dom.scene.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = makeSky();
-scene.fog = new THREE.Fog(0xbcd4ee, 320, 640);
+scene.background = makeSky(['#4f93dd', '#86b6e6', '#bcd4ee', '#dfeaf4']);
+scene.fog = new THREE.Fog(0xbcd4ee, 360, 760);
 
-const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 1400);
+const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 1600);
 const CAM_OFFSET = new THREE.Vector3(0, 60, 240);
 const CAM_TARGET_Y = 26;
 
-const hemi = new THREE.HemisphereLight(0xdcecff, 0x52623f, 0.85);
+const hemi = new THREE.HemisphereLight(0xdcecff, 0x52623f, 0.9);
 scene.add(hemi);
 
-const sun = new THREE.DirectionalLight(0xfff2d8, 1.15);
-sun.position.set(150, 230, 180);
+const sun = new THREE.DirectionalLight(0xfff2d8, 1.25);
+sun.position.set(150, 240, 200);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.left = -160;
-sun.shadow.camera.right = 160;
-sun.shadow.camera.top = 150;
-sun.shadow.camera.bottom = -60;
+sun.shadow.camera.left = -260;
+sun.shadow.camera.right = 260;
+sun.shadow.camera.top = 170;
+sun.shadow.camera.bottom = -80;
 sun.shadow.camera.near = 1;
-sun.shadow.camera.far = 700;
+sun.shadow.camera.far = 800;
 sun.shadow.bias = -0.0004;
 scene.add(sun);
 scene.add(sun.target);
 
+const fillLight = new THREE.DirectionalLight(0xa9c8ff, 0.25);
+fillLight.position.set(-160, 120, 120);
+scene.add(fillLight);
+
 const clock = new THREE.Clock();
 
-// backdrop (sky furniture that tracks the camera so the view is always full)
 const backdrop = new THREE.Group();
 const clouds = [];
 scene.add(backdrop);
-buildBackdrop();
 
 let terrainMesh = null;
+let waterMesh = null;
 const tankMeshes = new Map();
 const pickupMeshes = new Map();
+const propMeshes = new Map();
 
-// --- real tank model (CC0, loaded once then cloned + team-tinted per tank) ---
+// ---- post-processing (bloom) — optional, fails gracefully ----
+let composer = null;
+(async () => {
+  try {
+    const [{ EffectComposer }, { RenderPass }, { UnrealBloomPass }] = await Promise.all([
+      import('three/addons/postprocessing/EffectComposer.js'),
+      import('three/addons/postprocessing/RenderPass.js'),
+      import('three/addons/postprocessing/UnrealBloomPass.js'),
+    ]);
+    composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    const bloom = new UnrealBloomPass(
+      new THREE.Vector2(window.innerWidth, window.innerHeight), 0.65, 0.5, 0.85
+    );
+    composer.addPass(bloom);
+    composer.setSize(window.innerWidth, window.innerHeight);
+  } catch (err) {
+    console.warn('[gfx] bloom disabled.', err);
+    composer = null;
+  }
+})();
+
+// ======================================================================
+//  Model preloading (robust, with progress + fallback)
+// ======================================================================
 let tankProto = null;
 let protoAlignY = 0;
 let protoScale = 1;
 const TARGET_LEN = 15;
-new GLTFLoader().load('models/tank.glb', (gltf) => {
-  const m = gltf.scene;
-  const box = new THREE.Box3().setFromObject(m);
-  const size = new THREE.Vector3();
-  box.getSize(size);
-  protoAlignY = size.z > size.x ? Math.PI / 2 : 0;       // lay the hull length along X (side profile)
-  const lengthX = protoAlignY ? size.z : size.x;
-  protoScale = TARGET_LEN / (lengthX || 1);
-  tankProto = m;
-  // rebuild any tanks that were created with the procedural placeholder
-  for (const tank of state.tanks) {
-    const ref = tankMeshes.get(tank.id);
-    if (ref && ref.kind === 'proc') {
-      scene.remove(ref.group);
-      tankMeshes.delete(tank.id);
-      buildTank(tank);
-    }
-  }
-}, undefined, (err) => console.warn('Tank model failed to load — using procedural tanks.', err));
+let modelState = 'pending'; // pending | ready | failed
 
-// projectile
-const projMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, emissive: 0xffb030, emissiveIntensity: 1.4, roughness: 0.4 });
+function preloadModel(onProgress) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (s) => { if (!settled) { settled = true; modelState = s; resolve(s); } };
+    // Don't let a stalled CDN hang the menu forever.
+    const timeout = setTimeout(() => { if (!settled) { console.warn('[model] timeout — using procedural tanks'); finish('failed'); } }, 12000);
+
+    const tryLoad = (attempt) => {
+      new GLTFLoader().load(
+        'models/tank.glb',
+        (gltf) => {
+          clearTimeout(timeout);
+          const m = gltf.scene;
+          const box = new THREE.Box3().setFromObject(m);
+          const size = new THREE.Vector3();
+          box.getSize(size);
+          protoAlignY = size.z > size.x ? Math.PI / 2 : 0;
+          const lengthX = protoAlignY ? size.z : size.x;
+          protoScale = TARGET_LEN / (lengthX || 1);
+          tankProto = m;
+          finish('ready');
+          // upgrade any procedural tanks already on the field
+          for (const tank of state.tanks) {
+            const ref = tankMeshes.get(tank.id);
+            if (ref && ref.kind === 'proc') {
+              scene.remove(ref.group);
+              tankMeshes.delete(tank.id);
+              buildTank(tank);
+            }
+          }
+        },
+        (ev) => { if (onProgress && ev.total) onProgress(ev.loaded / ev.total); },
+        (err) => {
+          if (attempt < 1) { console.warn('[model] retrying…', err); tryLoad(attempt + 1); }
+          else { clearTimeout(timeout); console.warn('[model] failed — procedural tanks', err); finish('failed'); }
+        }
+      );
+    };
+    tryLoad(0);
+  });
+}
+
+// ======================================================================
+//  Projectile / trail / explosions / preview (mostly unchanged)
+// ======================================================================
+const projMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, emissive: 0xffb030, emissiveIntensity: 1.6, roughness: 0.4 });
 const projectileMesh = new THREE.Mesh(new THREE.SphereGeometry(1.7, 16, 16), projMat);
 projectileMesh.castShadow = true;
 projectileMesh.visible = false;
-const projLight = new THREE.PointLight(0xffaa33, 0, 70);
+const projLight = new THREE.PointLight(0xffaa33, 0, 80);
 projectileMesh.add(projLight);
 scene.add(projectileMesh);
 
@@ -166,7 +231,6 @@ trail.visible = false;
 scene.add(trail);
 let trailPoints = [];
 
-// explosions pool
 const boomGeo = new THREE.SphereGeometry(1, 16, 16);
 const explosions = [];
 
@@ -174,22 +238,21 @@ const aimArrow = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vec
 aimArrow.visible = false;
 scene.add(aimArrow);
 
-// dotted trajectory preview while aiming
-const PREVIEW_DOTS = 40;
+const PREVIEW_DOTS = 44;
 const previewGeo = new THREE.BufferGeometry();
 previewGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(PREVIEW_DOTS * 3), 3));
-const previewDots = new THREE.Points(previewGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 2.4, transparent: true, opacity: 0.85, sizeAttenuation: false }));
+const previewDots = new THREE.Points(previewGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 2.6, transparent: true, opacity: 0.85, sizeAttenuation: false }));
 previewDots.frustumCulled = false;
 previewDots.visible = false;
 scene.add(previewDots);
 
-// dust puffs kicked up while driving
 const dustTex = makeRadialTexture('rgba(180,160,130,0.8)', 'rgba(180,160,130,0)');
 const dustPool = [];
+const floaters = []; // floating damage / heal text
 
 function spawnDust(x, y) {
   const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: dustTex, transparent: true, opacity: 0.7, depthWrite: false }));
-  s.position.set(x + (Math.random() - 0.5) * 4, y + 1.5, 1);
+  s.position.set(x + (Math.random() - 0.5) * 4, y + 1.5, 2);
   s.scale.setScalar(3 + Math.random() * 3);
   scene.add(s);
   dustPool.push({ s, t: 0, dur: 0.6 + Math.random() * 0.3, vy: 6 + Math.random() * 4 });
@@ -200,33 +263,76 @@ function updateDust(dt) {
     d.t += dt;
     const k = d.t / d.dur;
     d.s.position.y += d.vy * dt;
-    d.s.scale.setScalar((3 + k * 5));
+    d.s.scale.setScalar(3 + k * 5);
     d.s.material.opacity = 0.7 * (1 - k);
     if (d.t >= d.dur) { scene.remove(d.s); d.s.material.dispose(); dustPool.splice(i, 1); }
   }
 }
 let dustTimer = 0;
 
+function makeTextSprite(text, color) {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 96;
+  const g = c.getContext('2d');
+  g.font = 'bold 56px system-ui, sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.lineWidth = 8;
+  g.strokeStyle = 'rgba(0,0,0,0.8)';
+  g.strokeText(text, 128, 48);
+  g.fillStyle = color;
+  g.fillText(text, 128, 48);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false }));
+  spr.scale.set(16, 6, 1);
+  return spr;
+}
+function spawnFloater(x, y, text, color) {
+  const spr = makeTextSprite(text, color);
+  spr.position.set(x, y, 6);
+  scene.add(spr);
+  floaters.push({ spr, t: 0, dur: 1.3 });
+}
+function updateFloaters(dt) {
+  for (let i = floaters.length - 1; i >= 0; i--) {
+    const f = floaters[i];
+    f.t += dt;
+    const k = f.t / f.dur;
+    f.spr.position.y += dt * 9;
+    f.spr.material.opacity = 1 - k * k;
+    if (f.t >= f.dur) {
+      scene.remove(f.spr);
+      f.spr.material.map.dispose();
+      f.spr.material.dispose();
+      floaters.splice(i, 1);
+    }
+  }
+}
+
 resizeCamera();
 window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
+  if (composer) composer.setSize(window.innerWidth, window.innerHeight);
   resizeCamera();
 });
 renderer.domElement.addEventListener('wheel', (e) => {
   e.preventDefault();
-  targetZoom = Math.max(0.7, Math.min(3.5, targetZoom * (1 - e.deltaY * 0.0012)));
+  targetZoom = Math.max(0.6, Math.min(3.5, targetZoom * (1 - e.deltaY * 0.0012)));
 }, { passive: false });
 
-function makeSky() {
+// ======================================================================
+//  Sky / backdrop / textures
+// ======================================================================
+function makeSky(colors) {
   const c = document.createElement('canvas');
-  c.width = 2;
-  c.height = 256;
+  c.width = 2; c.height = 256;
   const g = c.getContext('2d');
   const grad = g.createLinearGradient(0, 0, 0, 256);
-  grad.addColorStop(0, '#4f93dd');
-  grad.addColorStop(0.45, '#86b6e6');
-  grad.addColorStop(0.8, '#bcd4ee');
-  grad.addColorStop(1, '#dfeaf4');
+  grad.addColorStop(0, colors[0]);
+  grad.addColorStop(0.45, colors[1]);
+  grad.addColorStop(0.8, colors[2]);
+  grad.addColorStop(1, colors[3]);
   g.fillStyle = grad;
   g.fillRect(0, 0, 2, 256);
   const tex = new THREE.CanvasTexture(c);
@@ -244,32 +350,48 @@ function resizeCamera() {
   camera.updateProjectionMatrix();
 }
 
-// --- backdrop (sun, clouds, parallax hills) ---
-function buildBackdrop() {
-  // sun glow
+function clearGroup(g) {
+  for (let i = g.children.length - 1; i >= 0; i--) {
+    const o = g.children[i];
+    g.remove(o);
+    if (o.material) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); }
+    if (o.geometry) o.geometry.dispose();
+  }
+}
+
+function buildBackdrop(biome) {
+  clearGroup(backdrop);
+  clouds.length = 0;
+
   const sunSprite = new THREE.Sprite(new THREE.SpriteMaterial({
     map: makeRadialTexture('rgba(255,247,214,0.95)', 'rgba(255,240,180,0)'),
     transparent: true, depthTest: false, depthWrite: false,
   }));
-  sunSprite.scale.set(120, 120, 1);
-  sunSprite.position.set(-150, 120, -260);
+  sunSprite.scale.set(130, 130, 1);
+  sunSprite.position.set(-170, 130, -280);
   backdrop.add(sunSprite);
 
-  // two layers of rolling hills behind the playfield
-  backdrop.add(makeHillLayer('#7fa9cf', 0.55, -300, 70, 44));
-  backdrop.add(makeHillLayer('#8fbf86', 0.85, -200, 48, 30));
+  const far = biome ? biome.high : '#7fa9cf';
+  const near = biome ? biome.low : '#8fbf86';
+  backdrop.add(makeHillLayer(shade(far, 0.78), 0.55, -320, 80, 48));
+  backdrop.add(makeHillLayer(shade(near, 0.9), 0.85, -210, 52, 32));
 
-  // drifting clouds
+  const cloudCount = biome && (biome.id === 'desert' || biome.id === 'wasteland') ? 3 : 6;
   const cloudTex = makeCloudTexture();
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < cloudCount; i++) {
     const cl = new THREE.Sprite(new THREE.SpriteMaterial({ map: cloudTex, transparent: true, opacity: 0.8, depthTest: false, depthWrite: false }));
     const s = 60 + Math.random() * 70;
     cl.scale.set(s, s * 0.5, 1);
-    cl.position.set(-360 + Math.random() * 720, 70 + Math.random() * 80, -250 - Math.random() * 60);
+    cl.position.set(-380 + Math.random() * 760, 80 + Math.random() * 80, -260 - Math.random() * 60);
     cl.userData.drift = 4 + Math.random() * 6;
     backdrop.add(cl);
     clouds.push(cl);
   }
+}
+
+function shade(hex, mul) {
+  const c = new THREE.Color(hex).multiplyScalar(mul);
+  return '#' + c.getHexString();
 }
 
 function makeRadialTexture(inner, outer) {
@@ -318,48 +440,74 @@ function makeHillLayer(color, opacity, z, height, baseY) {
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   const plane = new THREE.Mesh(
-    new THREE.PlaneGeometry(900, height),
+    new THREE.PlaneGeometry(1100, height),
     new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity, depthWrite: false, fog: true })
   );
   plane.position.set(0, baseY, z);
   return plane;
 }
 
-// --- terrain (2.5D ribbon) ---
-function topColor(h, target) {
-  const t = Math.max(0, Math.min(1, (h - 6) / 44));
-  target.copy(new THREE.Color(0x4e9a4e)).lerp(new THREE.Color(0x7cba5e), t);
+// ======================================================================
+//  Terrain (biome-coloured 2.5D ribbon) + water
+// ======================================================================
+const _low = new THREE.Color(), _high = new THREE.Color(), _snow = new THREE.Color(0xffffff);
+function topColor(h, out) {
+  const b = state.biome;
+  _low.set(b.low); _high.set(b.high);
+  const t = Math.max(0, Math.min(1, (h - 8) / 56));
+  out.copy(_low).lerp(_high, t);
+  if (b.snowline) {
+    const s = Math.max(0, Math.min(1, (h - b.snowline) / 16));
+    out.lerp(_snow, s);
+  }
 }
 
 function buildTerrain() {
+  if (terrainMesh) { scene.remove(terrainMesh); terrainMesh.geometry.dispose(); terrainMesh.material.dispose(); terrainMesh = null; }
   const cols = state.world.cols;
   const geo = new THREE.BufferGeometry();
   const positions = new Float32Array(cols * 3 * 3);
   const colors = new Float32Array(cols * 3 * 3);
-  const dirt = new THREE.Color(0x6b4e33);
-  const dirtDeep = new THREE.Color(0x4a3522);
+  const dirt = new THREE.Color(state.biome.dirt);
+  const dirtDeep = new THREE.Color(state.biome.dirtDeep);
   for (let i = 0; i < cols; i++) {
     const h = state.heightmap[i];
-    setVert(positions, i, i, h, TERRAIN_DEPTH / 2);              // topFront
-    setVert(positions, cols + i, i, h, -TERRAIN_DEPTH / 2);      // topBack
-    setVert(positions, 2 * cols + i, i, BASE_Y, TERRAIN_DEPTH / 2); // botFront
+    setVert(positions, i, i, h, TERRAIN_DEPTH / 2);
+    setVert(positions, cols + i, i, h, -TERRAIN_DEPTH / 2);
+    setVert(positions, 2 * cols + i, i, BASE_Y, TERRAIN_DEPTH / 2);
     setColor(colors, cols + i, dirt);
     setColor(colors, 2 * cols + i, dirtDeep);
   }
   const idx = [];
   for (let i = 0; i < cols - 1; i++) {
     const tf = i, tf1 = i + 1, tb = cols + i, tb1 = cols + i + 1, bf = 2 * cols + i, bf1 = 2 * cols + i + 1;
-    idx.push(tf, tb, tf1, tf1, tb, tb1);   // top
-    idx.push(tf, tf1, bf, tf1, bf1, bf);   // front
+    idx.push(tf, tb, tf1, tf1, tb, tb1);
+    idx.push(tf, tf1, bf, tf1, bf1, bf);
   }
   geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   geo.setIndex(idx);
-  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.96, metalness: 0 });
-  terrainMesh = new THREE.Mesh(geo, mat);
+  const matl = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.97, metalness: 0 });
+  terrainMesh = new THREE.Mesh(geo, matl);
   terrainMesh.receiveShadow = true;
   scene.add(terrainMesh);
   refreshTerrain();
+  buildWater();
+}
+
+function buildWater() {
+  if (waterMesh) { scene.remove(waterMesh); waterMesh.geometry.dispose(); waterMesh.material.dispose(); waterMesh = null; }
+  if (state.biome.water == null) return;
+  const cols = state.world.cols;
+  const geo = new THREE.PlaneGeometry(cols + 20, TERRAIN_DEPTH + 4);
+  geo.rotateX(-Math.PI / 2);
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0x2f86c4, transparent: true, opacity: 0.78, roughness: 0.25, metalness: 0.3,
+  });
+  waterMesh = new THREE.Mesh(geo, mat);
+  waterMesh.position.set((cols - 1) / 2, state.biome.water, 0);
+  waterMesh.renderOrder = 1;
+  scene.add(waterMesh);
 }
 
 function setVert(arr, vi, x, y, z) { arr[vi * 3] = x; arr[vi * 3 + 1] = y; arr[vi * 3 + 2] = z; }
@@ -388,9 +536,25 @@ function heightAtClient(x) {
   return state.heightmap[i];
 }
 
-// --- tanks ---
+// ======================================================================
+//  Tanks
+// ======================================================================
 function mat(color, rough, metal) {
   return new THREE.MeshStandardMaterial({ color, roughness: rough ?? 0.6, metalness: metal ?? 0.15 });
+}
+
+const SKIN_STYLE = {
+  default: { metal: 0.3, rough: 0.55, base: null },
+  desert:  { metal: 0.2, rough: 0.7,  base: 0xc9a45a },
+  forest:  { metal: 0.2, rough: 0.7,  base: 0x4e7a3a },
+  arctic:  { metal: 0.3, rough: 0.55, base: 0xdfe9f2 },
+  carbon:  { metal: 0.75, rough: 0.35, base: 0x2b2f36 },
+  gold:    { metal: 0.9, rough: 0.22, base: 0xffcf4a, emissive: 0x3a2a00 },
+};
+
+function tankBaseColor(tank) {
+  const style = SKIN_STYLE[tank.skin] || SKIN_STYLE.default;
+  return style.base != null ? new THREE.Color(style.base) : new THREE.Color(tank.color);
 }
 
 function makeFlash(x, y) {
@@ -404,20 +568,31 @@ function makeFlash(x, y) {
   return flash;
 }
 
-function makeHpGroup(teamColor, atY) {
+function makeHpGroup(barColor, atY) {
   const hpGroup = new THREE.Group();
   hpGroup.position.y = atY;
   const hpBg = new THREE.Mesh(new THREE.PlaneGeometry(13, 1.6), new THREE.MeshBasicMaterial({ color: 0x101319, transparent: true, opacity: 0.85, depthTest: false }));
   hpBg.renderOrder = 5;
   hpGroup.add(hpBg);
-  const hpFill = new THREE.Mesh(new THREE.PlaneGeometry(12, 1).translate(6, 0, 0), new THREE.MeshBasicMaterial({ color: new THREE.Color(teamColor), depthTest: false }));
+  const hpFill = new THREE.Mesh(new THREE.PlaneGeometry(12, 1).translate(6, 0, 0), new THREE.MeshBasicMaterial({ color: new THREE.Color(barColor), depthTest: false }));
   hpFill.position.set(-6, 0, 0.1);
   hpFill.renderOrder = 6;
   hpGroup.add(hpFill);
   return { hpGroup, hpFill };
 }
 
-// which way the tank should face (yaw): aimers turn toward their shot, others face the enemy
+// small team flag so sides are readable regardless of skin / colour
+function makeTeamFlag(teamColor, atY) {
+  const g = new THREE.Group();
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 5, 6), mat(0x222222, 0.7, 0.3));
+  pole.position.y = atY + 2.5;
+  g.add(pole);
+  const flag = new THREE.Mesh(new THREE.PlaneGeometry(3, 1.8), new THREE.MeshBasicMaterial({ color: teamColor, side: THREE.DoubleSide }));
+  flag.position.set(1.6, atY + 4, 0);
+  g.add(flag);
+  return g;
+}
+
 function facingFor(tank) {
   if (tank.id === state.youId && isMyTurn()) {
     return Number(dom.angle.value) >= 90 ? Math.PI : 0;
@@ -444,7 +619,9 @@ function buildModelTank(tank) {
   inner.position.z -= c.z;
   inner.position.y -= box.min.y;
 
-  const team = new THREE.Color(tank.color);
+  const style = SKIN_STYLE[tank.skin] || SKIN_STYLE.default;
+  const base = tankBaseColor(tank);
+  const accent = new THREE.Color(tank.color);
   inner.traverse((o) => {
     if (!o.isMesh) return;
     o.castShadow = true;
@@ -454,10 +631,11 @@ function buildModelTank(tank) {
       const mm = m.clone();
       const n = (m.name || '').toLowerCase();
       if (n.includes('main') && !n.includes('dark') && !n.includes('detail')) {
-        mm.color = team.clone();
-        if (n.includes('light')) mm.color.multiplyScalar(1.3);
-        mm.metalness = 0.3;
-        mm.roughness = 0.55;
+        mm.color = base.clone();
+        if (n.includes('light')) mm.color.lerp(accent, 0.4).multiplyScalar(1.15);
+        mm.metalness = style.metal;
+        mm.roughness = style.rough;
+        if (style.emissive) { mm.emissive = new THREE.Color(style.emissive); mm.emissiveIntensity = 0.6; }
       }
       return mm;
     };
@@ -471,6 +649,7 @@ function buildModelTank(tank) {
 
   const { hpGroup, hpFill } = makeHpGroup(tank.color, 14);
   group.add(hpGroup);
+  group.add(makeTeamFlag(tank.teamColor || tank.color, 11));
 
   group.position.set(tank.x, tank.y, 0);
   modelGroup.rotation.y = facingFor(tank);
@@ -481,29 +660,27 @@ function buildModelTank(tank) {
 
 function buildProceduralTank(tank) {
   const group = new THREE.Group();
-  const team = new THREE.Color(tank.color);
+  const style = SKIN_STYLE[tank.skin] || SKIN_STYLE.default;
+  const team = tankBaseColor(tank);
   const dark = team.clone().multiplyScalar(0.7);
   const trackMat = mat(0x23272e, 0.95, 0.1);
 
-  // lower hull
-  const lower = new THREE.Mesh(new THREE.BoxGeometry(11, 2.2, 8), mat(dark, 0.55, 0.25));
+  const lower = new THREE.Mesh(new THREE.BoxGeometry(11, 2.2, 8), mat(dark, style.rough, style.metal));
   lower.position.y = 2.4;
   lower.castShadow = lower.receiveShadow = true;
   group.add(lower);
 
-  // upper hull (narrower, slightly inset) + sloped glacis
-  const upper = new THREE.Mesh(new THREE.BoxGeometry(8.5, 2.4, 6.4), mat(team, 0.5, 0.25));
+  const upper = new THREE.Mesh(new THREE.BoxGeometry(8.5, 2.4, 6.4), mat(team, style.rough, style.metal));
   upper.position.y = 4.4;
   upper.castShadow = true;
   group.add(upper);
 
-  const glacis = new THREE.Mesh(new THREE.BoxGeometry(3.2, 2.6, 6.2), mat(team, 0.5, 0.25));
+  const glacis = new THREE.Mesh(new THREE.BoxGeometry(3.2, 2.6, 6.2), mat(team, style.rough, style.metal));
   glacis.position.set(5, 3.7, 0);
   glacis.rotation.z = -0.6;
   glacis.castShadow = true;
   group.add(glacis);
 
-  // tracks + road wheels
   for (const sz of [-1, 1]) {
     const track = new THREE.Mesh(new THREE.BoxGeometry(12, 2.6, 1.9), trackMat);
     track.position.set(0, 1.5, sz * 3.6);
@@ -520,8 +697,7 @@ function buildProceduralTank(tank) {
     }
   }
 
-  // turret + mantlet + cupola
-  const turret = new THREE.Mesh(new THREE.SphereGeometry(3.1, 20, 14, 0, Math.PI * 2, 0, Math.PI / 2), mat(team, 0.45, 0.35));
+  const turret = new THREE.Mesh(new THREE.SphereGeometry(3.1, 20, 14, 0, Math.PI * 2, 0, Math.PI / 2), mat(team, style.rough * 0.9, style.metal + 0.05));
   turret.scale.set(1.1, 0.85, 1);
   turret.position.y = 5.6;
   turret.castShadow = true;
@@ -532,12 +708,6 @@ function buildProceduralTank(tank) {
   cupola.castShadow = true;
   group.add(cupola);
 
-  // antenna
-  const antenna = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 7, 6), mat(0x111111, 0.7, 0.3));
-  antenna.position.set(-2.4, 9.5, 1.6);
-  group.add(antenna);
-
-  // barrel on a pivot at the turret centre
   const barrelPivot = new THREE.Group();
   barrelPivot.position.set(0, 5.8, 0);
   const mantlet = new THREE.Mesh(new THREE.BoxGeometry(2.2, 2.2, 2.6), mat(dark, 0.45, 0.4));
@@ -553,29 +723,13 @@ function buildProceduralTank(tank) {
   muzzle.position.x = 8.8;
   barrelPivot.add(muzzle);
 
-  // muzzle flash (hidden until firing)
-  const flash = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: makeRadialTexture('rgba(255,240,180,1)', 'rgba(255,140,40,0)'),
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-  }));
-  flash.scale.set(0.1, 0.1, 1);
-  flash.position.x = 9.8;
-  flash.visible = false;
+  const flash = makeFlash(9.8, 0);
   barrelPivot.add(flash);
   group.add(barrelPivot);
 
-  // floating HP bar
-  const hpGroup = new THREE.Group();
-  hpGroup.position.y = 12;
-  const hpBg = new THREE.Mesh(new THREE.PlaneGeometry(13, 1.6), new THREE.MeshBasicMaterial({ color: 0x101319, transparent: true, opacity: 0.85, depthTest: false }));
-  hpBg.renderOrder = 5;
-  hpGroup.add(hpBg);
-  const fillGeo = new THREE.PlaneGeometry(12, 1).translate(6, 0, 0); // pivot at left edge
-  const hpFill = new THREE.Mesh(fillGeo, new THREE.MeshBasicMaterial({ color: team, depthTest: false }));
-  hpFill.position.set(-6, 0, 0.1);
-  hpFill.renderOrder = 6;
-  hpGroup.add(hpFill);
+  const { hpGroup, hpFill } = makeHpGroup(tank.color, 12);
   group.add(hpGroup);
+  group.add(makeTeamFlag(tank.teamColor || tank.color, 9));
 
   group.position.set(tank.x, tank.y, 0);
   scene.add(group);
@@ -586,10 +740,9 @@ function buildProceduralTank(tank) {
 function updateHpBar(tank) {
   const ref = tankMeshes.get(tank.id);
   if (!ref) return;
-  const f = Math.max(0, tank.hp) / 100;
+  const f = Math.max(0, tank.hp) / (tank.maxHp || 100);
   ref.hpFill.scale.x = f <= 0.001 ? 0.001 : f;
-  const c = new THREE.Color().setHSL(0.33 * f, 0.85, 0.5);
-  ref.hpFill.material.color.copy(c);
+  ref.hpFill.material.color.copy(new THREE.Color().setHSL(0.33 * f, 0.85, 0.5));
   ref.hpGroup.visible = tank.alive;
 }
 
@@ -609,7 +762,92 @@ function syncTanks() {
   }
 }
 
-// --- pickups ---
+// ======================================================================
+//  Destructible props
+// ======================================================================
+function buildPropMesh(prop) {
+  const g = new THREE.Group();
+  const t = prop.type;
+  if (t === 'barrel') {
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(2.2, 2.2, 5, 14), mat(0xb5462e, 0.5, 0.5));
+    body.position.y = 2.5; body.castShadow = body.receiveShadow = true; g.add(body);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(2.25, 0.18, 8, 18), mat(0x2a2a2a, 0.6, 0.5));
+    ring.rotation.x = Math.PI / 2; ring.position.y = 2.5; g.add(ring);
+  } else if (t === 'crate') {
+    const box = new THREE.Mesh(new THREE.BoxGeometry(4.5, 4.5, 4.5), mat(0xb98a4b, 0.85, 0.05));
+    box.position.y = 2.3; box.castShadow = box.receiveShadow = true; g.add(box);
+    const edge = new THREE.Mesh(new THREE.BoxGeometry(4.7, 0.5, 4.7), mat(0x8a6536, 0.85, 0.05));
+    edge.position.y = 2.3; g.add(edge);
+  } else if (t === 'rock') {
+    const r = new THREE.Mesh(new THREE.DodecahedronGeometry(3.4, 0), mat(0x808890, 0.95, 0.05));
+    r.position.y = 2.6; r.rotation.set(Math.random(), Math.random(), Math.random());
+    r.castShadow = r.receiveShadow = true; g.add(r);
+  } else if (t === 'tree') {
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.9, 5, 8), mat(0x6b4a2a, 0.9, 0));
+    trunk.position.y = 2.5; trunk.castShadow = true; g.add(trunk);
+    const leaves = new THREE.Mesh(new THREE.SphereGeometry(3.4, 12, 10), mat(0x3f8f3a, 0.9, 0));
+    leaves.position.y = 6.5; leaves.scale.y = 1.1; leaves.castShadow = true; g.add(leaves);
+  } else if (t === 'pine') {
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 0.8, 4, 8), mat(0x6b4a2a, 0.9, 0));
+    trunk.position.y = 2; trunk.castShadow = true; g.add(trunk);
+    for (let k = 0; k < 3; k++) {
+      const cone = new THREE.Mesh(new THREE.ConeGeometry(3 - k * 0.7, 3, 10), mat(0x2f7d4f, 0.9, 0));
+      cone.position.y = 4.2 + k * 2; cone.castShadow = true; g.add(cone);
+    }
+  } else if (t === 'cactus') {
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(1, 1.1, 5.5, 10), mat(0x3f8a4a, 0.85, 0));
+    body.position.y = 2.8; body.castShadow = true; g.add(body);
+    const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.55, 2.4, 8), mat(0x3f8a4a, 0.85, 0));
+    arm.position.set(1.3, 3.6, 0); arm.rotation.z = -0.5; g.add(arm);
+  } else if (t === 'palm') {
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.8, 7, 8), mat(0x8a6a3a, 0.9, 0));
+    trunk.position.y = 3.5; trunk.rotation.z = 0.12; trunk.castShadow = true; g.add(trunk);
+    for (let k = 0; k < 5; k++) {
+      const frond = new THREE.Mesh(new THREE.ConeGeometry(0.8, 4.5, 6), mat(0x46a05a, 0.85, 0));
+      frond.position.set(0, 7, 0);
+      frond.rotation.z = Math.PI / 2 - 0.6;
+      frond.rotation.y = (k / 5) * Math.PI * 2;
+      g.add(frond);
+    }
+  } else {
+    const box = new THREE.Mesh(new THREE.BoxGeometry(3, 3, 3), mat(0x888888, 0.9, 0.1));
+    box.position.y = 1.6; box.castShadow = true; g.add(box);
+  }
+  g.position.set(prop.x, prop.y, 0);
+  g.rotation.y = Math.random() * 0.4 - 0.2;
+  return g;
+}
+
+function syncProps() {
+  const seen = new Set();
+  for (const p of state.props) {
+    seen.add(p.id);
+    if (propMeshes.has(p.id)) continue;
+    const mesh = buildPropMesh(p);
+    scene.add(mesh);
+    propMeshes.set(p.id, mesh);
+  }
+  for (const [id, mesh] of propMeshes) {
+    if (!seen.has(id)) {
+      // a removed prop = destroyed: pop some debris
+      spawnExplosion(mesh.position.x, mesh.position.y + 2, 12, 0xffae5a, false);
+      scene.remove(mesh);
+      disposeGroup(mesh);
+      propMeshes.delete(id);
+    }
+  }
+}
+
+function disposeGroup(g) {
+  g.traverse((o) => {
+    if (o.geometry) o.geometry.dispose();
+    if (o.material) { if (Array.isArray(o.material)) o.material.forEach((m) => m.dispose()); else o.material.dispose(); }
+  });
+}
+
+// ======================================================================
+//  Pickups
+// ======================================================================
 function syncPickups() {
   const seen = new Set();
   for (const pk of state.pickups) {
@@ -619,7 +857,7 @@ function syncPickups() {
     const grp = new THREE.Group();
     const crate = new THREE.Mesh(
       new THREE.BoxGeometry(5, 5, 5),
-      new THREE.MeshStandardMaterial({ color: fx.proj, emissive: fx.boom, emissiveIntensity: 0.55, roughness: 0.45, metalness: 0.4 })
+      new THREE.MeshStandardMaterial({ color: fx.proj, emissive: fx.boom, emissiveIntensity: 0.7, roughness: 0.4, metalness: 0.4 })
     );
     crate.castShadow = true;
     grp.add(crate);
@@ -635,14 +873,13 @@ function syncPickups() {
     pickupMeshes.set(pk.id, grp);
   }
   for (const [id, mesh] of pickupMeshes) {
-    if (!seen.has(id)) {
-      scene.remove(mesh);
-      pickupMeshes.delete(id);
-    }
+    if (!seen.has(id)) { scene.remove(mesh); disposeGroup(mesh); pickupMeshes.delete(id); }
   }
 }
 
-// --- HUD ---
+// ======================================================================
+//  HUD
+// ======================================================================
 function pushLog(text) {
   const line = document.createElement('div');
   line.className = 'log-line';
@@ -652,12 +889,8 @@ function pushLog(text) {
   setTimeout(() => line.remove(), 5000);
 }
 
-function myTank() {
-  return state.tanks.find((t) => t.id === state.youId);
-}
-function activeTank() {
-  return state.tanks.find((t) => t.id === state.activePlayerId);
-}
+function myTank() { return state.tanks.find((t) => t.id === state.youId); }
+function activeTank() { return state.tanks.find((t) => t.id === state.activePlayerId); }
 
 function refreshHud() {
   if (state.gameOver) {
@@ -671,6 +904,7 @@ function refreshHud() {
   dom.windMag.textContent = Math.abs(state.wind);
   dom.windArrow.textContent = state.wind === 0 ? '•' : '➤';
   dom.windArrow.style.transform = `rotate(${state.wind < 0 ? 180 : 0}deg)`;
+  if (state.biome) dom.hudBiome.textContent = state.biome.name;
 }
 
 function refreshFuel() {
@@ -707,7 +941,7 @@ function refreshTeams() {
   for (const row of dom.teams.children) {
     const tank = state.tanks.find((t) => t.id === row.dataset.id);
     if (!tank) continue;
-    row.querySelector('.hp-fill').style.width = `${tank.hp}%`;
+    row.querySelector('.hp-fill').style.width = `${Math.max(0, tank.hp) / (tank.maxHp || 100) * 100}%`;
     row.classList.toggle('dead', !tank.alive);
     row.classList.toggle('active', tank.id === state.activePlayerId && !state.gameOver);
   }
@@ -721,6 +955,7 @@ function buildWeapons() {
   if (!owned.includes(state.currentWeapon)) state.currentWeapon = 'standard';
   for (const w of owned) {
     const def = state.weaponDefs[w];
+    if (!def) continue;
     const ammo = me.weapons[w];
     const fx = WEAPON_FX[w] || WEAPON_FX.standard;
     const btn = document.createElement('button');
@@ -731,9 +966,8 @@ function buildWeapons() {
   }
 }
 
-function isMyTurn() {
-  return !state.gameOver && !anim && state.activePlayerId === state.youId;
-}
+function isMyTurn() { return !state.gameOver && !anim && state.activePlayerId === state.youId; }
+
 function updateControls() {
   const mine = isMyTurn();
   dom.fireBtn.disabled = !mine;
@@ -751,7 +985,9 @@ function resetDrivePrediction() {
   localFuel = me.fuel;
 }
 
-// --- input: aiming via sliders ---
+// ======================================================================
+//  Aiming / driving input
+// ======================================================================
 dom.angle.addEventListener('input', () => { dom.angleVal.textContent = dom.angle.value; });
 dom.power.addEventListener('input', () => { dom.powerVal.textContent = dom.power.value; });
 
@@ -760,7 +996,7 @@ function fire() {
   if (!isMyTurn()) return;
   dom.fireBtn.disabled = true;
   driveDir = 0;
-  socket.emit('moveTo', { x: localTargetX }); // commit final position before firing
+  socket.emit('moveTo', { x: localTargetX });
   socket.emit('fire', {
     angle: Number(dom.angle.value),
     power: Number(dom.power.value),
@@ -768,7 +1004,6 @@ function fire() {
   });
 }
 
-// --- input: driving ---
 function bindHold(btn, dir) {
   const down = (e) => { e.preventDefault(); if (isMyTurn()) driveDir = dir; };
   const up = (e) => { e.preventDefault(); if (driveDir === dir) driveDir = 0; };
@@ -805,7 +1040,6 @@ function updateDriving(dt) {
   nx = Math.max(0, Math.min(state.world.cols - 1, nx));
   let moved = Math.abs(nx - localTargetX);
   if (moved > localFuel) { nx = localTargetX + Math.sign(nx - localTargetX) * localFuel; moved = localFuel; }
-  // block against other tanks (optimistic; server enforces authoritatively)
   for (const o of state.tanks) {
     if (o.id === me.id || !o.alive) continue;
     if (driveDir > 0 && o.x > localTargetX && o.x - 11 < nx) nx = Math.min(nx, o.x - 11);
@@ -822,18 +1056,13 @@ function updateDriving(dt) {
   refreshFuel();
   updateControls();
 
-  // kick up dust behind the treads so movement is unmistakably felt
   dustTimer -= dt;
   if (dustTimer <= 0) { spawnDust(nx - driveDir * 6, me.y); dustTimer = 0.06; }
 
   const now = performance.now();
-  if (now - lastMoveEmit > 55) {
-    lastMoveEmit = now;
-    socket.emit('moveTo', { x: nx });
-  }
+  if (now - lastMoveEmit > 55) { lastMoveEmit = now; socket.emit('moveTo', { x: nx }); }
 }
 
-// --- input: drag-to-aim on the battlefield ---
 const raycaster = new THREE.Raycaster();
 const aimPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
 const ndc = new THREE.Vector2();
@@ -870,9 +1099,7 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
   renderer.domElement.setPointerCapture(e.pointerId);
   applyAimFromPoint(e.clientX, e.clientY);
 });
-renderer.domElement.addEventListener('pointermove', (e) => {
-  if (aiming) applyAimFromPoint(e.clientX, e.clientY);
-});
+renderer.domElement.addEventListener('pointermove', (e) => { if (aiming) applyAimFromPoint(e.clientX, e.clientY); });
 const endAim = (e) => {
   if (!aiming) return;
   aiming = false;
@@ -881,55 +1108,69 @@ const endAim = (e) => {
 renderer.domElement.addEventListener('pointerup', endAim);
 renderer.domElement.addEventListener('pointercancel', endAim);
 
-// --- lobby ---
-for (const btn of document.querySelectorAll('.mode-btn')) {
-  btn.addEventListener('click', () => {
-    selectedMode = btn.dataset.mode;
-    for (const b of document.querySelectorAll('.mode-btn')) b.classList.toggle('selected', b === btn);
-  });
+// ======================================================================
+//  Socket / game flow
+// ======================================================================
+function cleanupGame() {
+  for (const [, ref] of tankMeshes) { scene.remove(ref.group); disposeGroup(ref.group); }
+  tankMeshes.clear();
+  for (const [, m] of pickupMeshes) { scene.remove(m); disposeGroup(m); }
+  pickupMeshes.clear();
+  for (const [, m] of propMeshes) { scene.remove(m); disposeGroup(m); }
+  propMeshes.clear();
+  for (const ex of explosions) { scene.remove(ex.mesh); ex.mesh.material.dispose(); if (ex.light) scene.remove(ex.light); }
+  explosions.length = 0;
+  for (const f of floaters) { scene.remove(f.spr); f.spr.material.map.dispose(); f.spr.material.dispose(); }
+  floaters.length = 0;
+  anim = null; pending = null; trailPoints = [];
+  projectileMesh.visible = false; projLight.intensity = 0; trail.visible = false;
 }
-document.getElementById('create-btn').addEventListener('click', () => socket.emit('createRoom', { mode: selectedMode }));
-document.getElementById('join-btn').addEventListener('click', () => {
-  const code = document.getElementById('join-code').value.trim().toUpperCase();
-  if (code.length === 4) {
-    socket.emit('joinRoom', { code });
-  } else {
-    dom.overlayMsg.textContent = 'Enter a 4-character room code.';
-  }
-});
 
-// --- socket events ---
 socket.on('roomCreated', ({ code, mode, capacity }) => {
-  dom.overlayMsg.textContent = `Room ${code} (${mode}) — waiting… 1/${capacity}`;
+  $('wait-code').textContent = code;
+  $('wait-msg').textContent = `Share the code. Waiting for players… 1/${capacity}`;
+  showScreen('screen-wait');
 });
 socket.on('lobbyUpdate', ({ count, capacity }) => {
-  dom.overlayMsg.textContent = `Waiting for players… ${count}/${capacity}`;
+  $('wait-msg').textContent = `Waiting for players… ${count}/${capacity}`;
+});
+socket.on('queueUpdate', ({ count, capacity }) => {
+  $('queue-status').textContent = `Searching… ${count}/${capacity} ready`;
 });
 socket.on('errorMsg', ({ message }) => {
   if (state.world && dom.overlay.classList.contains('hidden')) {
     pushLog(message);
   } else {
-    dom.overlayMsg.textContent = message;
+    $('menu-msg').textContent = message;
   }
   updateControls();
 });
 
 socket.on('gameStart', (data) => {
+  cleanupGame();
   state.youId = data.youId;
   state.mode = data.mode;
   state.world = data.world;
   state.heightmap = data.heightmap;
   state.tanks = data.tanks;
+  state.props = data.props || [];
   state.wind = data.wind;
   state.activePlayerId = data.activePlayerId;
   state.pickups = data.pickups;
   state.weaponDefs = data.weapons;
-  state.moveRange = data.moveRange || 44;
+  state.moveRange = data.moveRange || 60;
+  state.maxHp = data.maxHp || 100;
+  state.biome = data.biome;
   state.gameOver = false;
 
+  // biome-driven visuals
+  scene.background = makeSky(state.biome.sky);
+  scene.fog.color = new THREE.Color(state.biome.fog);
+  buildBackdrop(state.biome);
+
   buildTerrain();
+  syncProps();
   syncTanks();
-  syncPickups();
   buildTeams();
   buildWeapons();
 
@@ -939,10 +1180,11 @@ socket.on('gameStart', (data) => {
   dom.power.value = 60;
   dom.powerVal.textContent = '60';
   focusX = me ? me.x : (state.world.cols - 1) / 2;
+  camX = focusX;
   resetDrivePrediction();
 
   dom.hudRoom.textContent = `Room ${data.code} · ${data.mode}`;
-  dom.overlay.classList.add('hidden');
+  hideOverlay();
   refreshHud();
   refreshFuel();
   updateControls();
@@ -955,7 +1197,6 @@ socket.on('tankMoved', ({ id, x, y, fuel, collected, pickups }) => {
   syncPickups();
 
   if (id === state.youId) {
-    // reconcile local prediction; snap only if the server clamped us hard
     if (Math.abs(x - localTargetX) > 3) localTargetX = x;
     localFuel = fuel;
   } else {
@@ -978,26 +1219,33 @@ socket.on('shotResolved', (data) => {
   driveDir = 0;
   dom.fireBtn.disabled = true;
   updateControls();
-  // muzzle flash on the shooter
   const ref = tankMeshes.get(data.shooterId);
   if (ref) ref.flashT = 0.12;
 });
 
 socket.on('opponentLeft', ({ message }) => {
   state.gameOver = true;
-  showOverlay(message, true);
   updateControls();
+  showResult('Match ended', message, null);
 });
 
 function applyPending() {
   state.heightmap = pending.heightmap;
   state.tanks = pending.tanks;
+  state.props = pending.props || [];
   refreshTerrain();
+  if (waterMesh) waterMesh.position.x = (state.world.cols - 1) / 2;
   syncTanks();
+  syncProps();
 
   for (const d of pending.damages) {
     const t = state.tanks.find((x) => x.id === d.id);
     pushLog(`${t ? t.name : '?'} took ${d.amount}${d.dead ? ' — destroyed!' : ''}`);
+    if (t) spawnFloater(t.x, t.y + 16, `-${d.amount}`, '#ff6a5a');
+  }
+  for (const h of (pending.heals || [])) {
+    const t = state.tanks.find((x) => x.id === h.id);
+    if (t) { spawnFloater(t.x, t.y + 20, `+${h.amount} HP`, '#5dff8a'); pushLog(`${t.name} recovered ${h.amount} HP!`); }
   }
   for (const c of pending.collected) {
     const t = state.tanks.find((x) => x.id === c.tankId);
@@ -1009,7 +1257,13 @@ function applyPending() {
     state.gameOver = true;
     const me = myTank();
     const won = me && next.winnerTeam === me.team;
-    showOverlay(won ? 'Your team wins!' : next.winnerTeam === null ? 'Draw.' : 'Your team lost.', true);
+    const reward = next.rewards ? next.rewards[state.youId] : null;
+    grantReward(reward, won, next.winnerTeam);
+    showResult(
+      won ? 'Victory!' : next.winnerTeam === null ? 'Draw' : 'Defeat',
+      won ? 'Your team wins the battle.' : next.winnerTeam === null ? 'Both sides fell.' : 'Your team was destroyed.',
+      reward
+    );
   } else {
     state.activePlayerId = next.activePlayerId;
     state.wind = next.wind;
@@ -1025,19 +1279,9 @@ function applyPending() {
   updateControls();
 }
 
-function showOverlay(message, withReplay) {
-  dom.panel.innerHTML = `<h1>${message}</h1>`;
-  if (withReplay) {
-    const btn = document.createElement('button');
-    btn.id = 'create-btn';
-    btn.textContent = 'Play Again';
-    btn.addEventListener('click', () => location.reload());
-    dom.panel.appendChild(btn);
-  }
-  dom.overlay.classList.remove('hidden');
-}
-
-// --- explosions ---
+// ======================================================================
+//  Explosions / animation / camera (renderer loop)
+// ======================================================================
 function spawnExplosion(x, y, radius, color, big) {
   const mesh = new THREE.Mesh(boomGeo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.92, depthWrite: false }));
   mesh.position.set(x, y, 0);
@@ -1045,7 +1289,7 @@ function spawnExplosion(x, y, radius, color, big) {
   scene.add(mesh);
   let light = null;
   if (big) {
-    light = new THREE.PointLight(color, 6, radius * 7);
+    light = new THREE.PointLight(color, 7, radius * 7);
     light.position.set(x, y + 5, 14);
     scene.add(light);
   }
@@ -1060,7 +1304,7 @@ function updateExplosions(dt) {
     const k = Math.min(1, ex.t / ex.dur);
     ex.mesh.scale.setScalar(Math.max(0.5, ex.radius * 1.3 * k));
     ex.mesh.material.opacity = 0.92 * (1 - k);
-    if (ex.light) ex.light.intensity = 6 * (1 - k);
+    if (ex.light) ex.light.intensity = 7 * (1 - k);
     if (ex.t >= ex.dur) {
       scene.remove(ex.mesh);
       ex.mesh.material.dispose();
@@ -1074,13 +1318,10 @@ function detonate(proj) {
   const fx = WEAPON_FX[proj.kind] || WEAPON_FX.standard;
   spawnExplosion(proj.impact.x, proj.impact.y, proj.blastRadius, fx.boom, true);
   if (proj.subImpacts) {
-    for (const si of proj.subImpacts) {
-      spawnExplosion(si.x, si.y, si.radius, fx.boom, false);
-    }
+    for (const si of proj.subImpacts) spawnExplosion(si.x, si.y, si.radius, fx.boom, false);
   }
 }
 
-// --- aim arrow ---
 const _v = new THREE.Vector3();
 function updateAim() {
   if (!isMyTurn()) { aimArrow.visible = false; return; }
@@ -1095,7 +1336,6 @@ function updateAim() {
   aimArrow.visible = true;
 }
 
-// --- live trajectory preview (mirrors the server integrator) ---
 function updatePreview() {
   if (!isMyTurn()) { previewDots.visible = false; return; }
   const me = myTank();
@@ -1116,9 +1356,7 @@ function updatePreview() {
     let stop = false;
     if (x < -50 || x > cols + 50) break;
     if (x >= 0 && x <= cols - 1 && y <= heightAtClient(x)) stop = true;
-    if (i % STRIDE === 0 || stop) {
-      arr[n * 3] = x; arr[n * 3 + 1] = y; arr[n * 3 + 2] = 0; n++;
-    }
+    if (i % STRIDE === 0 || stop) { arr[n * 3] = x; arr[n * 3 + 1] = y; arr[n * 3 + 2] = 0; n++; }
     if (stop) break;
   }
   previewGeo.setDrawRange(0, n);
@@ -1128,7 +1366,6 @@ function updatePreview() {
   previewDots.visible = n > 1;
 }
 
-// --- animation ---
 function stepAnim(dt) {
   if (!anim) return;
   const proj = anim.projectiles[anim.pi];
@@ -1154,27 +1391,18 @@ function stepAnim(dt) {
     projLight.color.setHex(fx.proj);
     projectileMesh.position.set(px, py, 0);
     projectileMesh.visible = true;
-    projLight.intensity = 1.6;
+    projLight.intensity = 1.8;
     focusX = px;
     trail.material.color.setHex(fx.proj);
     trailPoints.push(new THREE.Vector3(px, py, 0));
-    if (trailPoints.length > 26) trailPoints.shift();
-    if (trailPoints.length > 1) {
-      trail.geometry.setFromPoints(trailPoints);
-      trail.visible = true;
-    }
+    if (trailPoints.length > 28) trailPoints.shift();
+    if (trailPoints.length > 1) { trail.geometry.setFromPoints(trailPoints); trail.visible = true; }
   } else {
     anim.boom += dt;
     if (anim.boom >= BOOM_TIME) {
       anim.pi += 1;
-      if (anim.pi >= anim.projectiles.length) {
-        anim = null;
-        applyPending();
-      } else {
-        anim.phase = 'fly';
-        anim.prog = 0;
-        trailPoints = [];
-      }
+      if (anim.pi >= anim.projectiles.length) { anim = null; applyPending(); }
+      else { anim.phase = 'fly'; anim.prog = 0; trailPoints = []; }
     }
   }
 }
@@ -1192,11 +1420,8 @@ function updateCamera(dt) {
   const cols = state.world ? state.world.cols : 240;
   const halfW = VIEW_WIDTH / 2 / targetZoom;
   let target;
-  if (halfW * 2 >= cols) {
-    target = (cols - 1) / 2;
-  } else {
-    target = Math.max(halfW, Math.min(cols - 1 - halfW, focusX));
-  }
+  if (halfW * 2 >= cols) target = (cols - 1) / 2;
+  else target = Math.max(halfW, Math.min(cols - 1 - halfW, focusX));
   camX += (target - camX) * ease;
 
   shake *= Math.exp(-6 * dt);
@@ -1215,6 +1440,7 @@ function animate() {
   updateDriving(dt);
   stepAnim(dt);
   updateExplosions(dt);
+  updateFloaters(dt);
 
   for (const tank of state.tanks) {
     const ref = tankMeshes.get(tank.id);
@@ -1222,15 +1448,11 @@ function animate() {
     const k = 1 - Math.exp(-14 * dt);
     ref.group.position.x += (ref.targetX - ref.group.position.x) * k;
     ref.group.position.y += (ref.targetY - ref.group.position.y) * k;
-    if (ref.barrelPivot) {
-      ref.barrelPivot.rotation.z = (barrelAngleFor(tank) * Math.PI) / 180;
-    }
+    if (ref.barrelPivot) ref.barrelPivot.rotation.z = (barrelAngleFor(tank) * Math.PI) / 180;
     if (ref.modelGroup) {
-      // smoothly turn the hull to face the aim/enemy direction
       const target = facingFor(tank);
       ref.modelGroup.rotation.y += (target - ref.modelGroup.rotation.y) * (1 - Math.exp(-9 * dt));
     }
-    // muzzle flash decay
     if (ref.flashT > 0) {
       ref.flashT -= dt;
       ref.flash.visible = true;
@@ -1244,15 +1466,306 @@ function animate() {
     grp.rotation.y += dt * 1.6;
     grp.position.y = grp.userData.baseY + Math.sin(clock.elapsedTime * 2 + grp.position.x) * 0.8;
   }
+  if (waterMesh) waterMesh.material.opacity = 0.74 + Math.sin(clock.elapsedTime * 1.5) * 0.05;
   for (const cl of clouds) {
     cl.position.x += cl.userData.drift * dt;
-    if (cl.position.x > 380) cl.position.x = -380;
+    if (cl.position.x > 400) cl.position.x = -400;
   }
 
   updateDust(dt);
   updateAim();
   updatePreview();
   updateCamera(dt);
-  renderer.render(scene, camera);
+
+  if (composer) composer.render();
+  else renderer.render(scene, camera);
 }
 animate();
+
+// ======================================================================
+//  Profile + menu + shop + customize + auth
+// ======================================================================
+let profile = defaultProfile();
+let authUser = null;
+let guestMode = false;
+let saveTimer = null;
+
+function profilePayload() {
+  return { name: profile.name, kit: profile.selectedKit, color: profile.color, skin: profile.selectedSkin };
+}
+function syncProfileToServer() { socket.emit('setProfile', profilePayload()); }
+
+function saveProfile() {
+  profile = normalizeProfile(profile);
+  if (authUser) {
+    FB.localSave(authUser.uid, profile);
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => FB.remoteSave(authUser.uid, profile), 400);
+  } else {
+    FB.localSave('guest', profile);
+  }
+  syncProfileToServer();
+}
+
+async function loadProfileFor(user) {
+  let p = null;
+  if (user) {
+    p = await FB.remoteLoad(user.uid);
+    if (!p) p = FB.localLoad(user.uid);
+    if (!p) { p = defaultProfile(); p.name = user.displayName || (user.email ? user.email.split('@')[0] : 'Player'); }
+  } else {
+    p = FB.localLoad('guest') || defaultProfile();
+  }
+  profile = normalizeProfile(p);
+  if (user && !profile.name) profile.name = user.displayName || 'Player';
+  // persist (creates the doc on first login) + tell the server who we are
+  if (user) { FB.localSave(user.uid, profile); FB.remoteSave(user.uid, profile); }
+  else FB.localSave('guest', profile);
+  syncProfileToServer();
+}
+
+function enterMenu() {
+  refreshMenu();
+  showScreen('screen-menu');
+}
+
+function refreshMenu() {
+  $('menu-name').textContent = profile.name;
+  $('menu-coins').textContent = profile.coins;
+  $('menu-kit-name').textContent = (KITS[profile.selectedKit] || KITS.standard).name;
+  $('menu-msg').textContent = '';
+}
+
+function grantReward(reward, won, winnerTeam) {
+  if (won) profile.stats.wins += 1;
+  else if (winnerTeam !== null) profile.stats.losses += 1;
+  if (reward) {
+    profile.coins += reward.coins || 0;
+    profile.stats.kills += reward.kills || 0;
+  }
+  saveProfile();
+}
+
+function showResult(title, detail, reward) {
+  $('result-title').textContent = title;
+  $('result-detail').textContent = detail;
+  const box = $('result-reward');
+  if (reward) {
+    box.innerHTML = `<span class="big">+${reward.coins} ◎</span>` +
+      `${reward.kills ? `${reward.kills} kill${reward.kills > 1 ? 's' : ''} · ` : ''}` +
+      `${reward.propsDestroyed ? `${reward.propsDestroyed} destroyed` : ''}`;
+  } else {
+    box.innerHTML = '';
+  }
+  showScreen('screen-result');
+}
+
+// ---- menu controls ----
+for (const btn of document.querySelectorAll('#menu-modes .mode-btn')) {
+  btn.addEventListener('click', () => {
+    selectedMode = btn.dataset.mode;
+    for (const b of document.querySelectorAll('#menu-modes .mode-btn')) b.classList.toggle('selected', b === btn);
+  });
+}
+$('btn-quick').addEventListener('click', () => {
+  socket.emit('quickMatch', { mode: selectedMode, profile: profilePayload() });
+  $('queue-status').textContent = 'Searching for an opponent…';
+  showScreen('screen-queue');
+});
+$('btn-cancel-queue').addEventListener('click', () => {
+  socket.emit('cancelQuickMatch');
+  enterMenu();
+});
+$('btn-create').addEventListener('click', () => {
+  socket.emit('createRoom', { mode: selectedMode, profile: profilePayload() });
+});
+$('btn-join').addEventListener('click', () => {
+  const code = $('join-code').value.trim().toUpperCase();
+  if (code.length === 4) socket.emit('joinRoom', { code, profile: profilePayload() });
+  else $('menu-msg').textContent = 'Enter a 4-character room code.';
+});
+$('btn-wait-cancel').addEventListener('click', () => location.reload());
+$('btn-again').addEventListener('click', () => { state.world = null; enterMenu(); });
+$('btn-shop').addEventListener('click', () => { buildShop(); showScreen('screen-shop'); });
+$('btn-customize').addEventListener('click', () => { buildCustomize(); showScreen('screen-customize'); });
+$('btn-shop-back').addEventListener('click', enterMenu);
+$('btn-cust-back').addEventListener('click', enterMenu);
+$('btn-signout').addEventListener('click', async () => {
+  if (authUser) await FB.signOutUser();
+  guestMode = false;
+  authUser = null;
+  showAuth();
+});
+
+// ---- shop ----
+function buildShop() {
+  $('shop-coins').textContent = profile.coins;
+  const kitWrap = $('shop-kits');
+  kitWrap.innerHTML = '';
+  for (const id of Object.keys(KITS)) {
+    const kit = KITS[id];
+    const owned = profile.ownedKits.includes(id);
+    const card = document.createElement('div');
+    card.className = 'card' + (kit.special ? ' special' : '') + (profile.selectedKit === id ? ' selected' : '');
+    let action;
+    if (profile.selectedKit === id) action = `<button class="cbtn equipped" disabled>Equipped</button>`;
+    else if (owned) action = `<button class="cbtn" data-equip-kit="${id}">Equip</button>`;
+    else action = `<button class="cbtn buy" data-buy-kit="${id}" ${profile.coins < kit.price ? 'disabled' : ''}>Buy ◎${kit.price}</button>`;
+    card.innerHTML =
+      `<div class="ct">${kit.name}${kit.special ? '<span class="tag">SPECIAL</span>' : ''}</div>` +
+      `<div class="cd">${kit.desc}</div>` +
+      `<div class="cl">${kit.loadout}</div>` + action;
+    kitWrap.appendChild(card);
+  }
+  const skinWrap = $('shop-skins');
+  skinWrap.innerHTML = '';
+  for (const id of Object.keys(SKINS)) {
+    const skin = SKINS[id];
+    const owned = profile.ownedSkins.includes(id);
+    const card = document.createElement('div');
+    card.className = 'card skin' + (skin.special ? ' special' : '') + (profile.selectedSkin === id ? ' selected' : '');
+    let action;
+    if (profile.selectedSkin === id) action = `<button class="cbtn equipped" disabled>Equipped</button>`;
+    else if (owned) action = `<button class="cbtn" data-equip-skin="${id}">Equip</button>`;
+    else action = `<button class="cbtn buy" data-buy-skin="${id}" ${profile.coins < skin.price ? 'disabled' : ''}>◎${skin.price}</button>`;
+    card.innerHTML = `<div class="sw" style="background:${skin.swatch}"></div><div class="ct">${skin.name}</div>${action}`;
+    skinWrap.appendChild(card);
+  }
+  wireShopButtons();
+}
+
+function wireShopButtons() {
+  for (const b of document.querySelectorAll('[data-buy-kit]')) b.addEventListener('click', () => buyKit(b.dataset.buyKit));
+  for (const b of document.querySelectorAll('[data-equip-kit]')) b.addEventListener('click', () => { profile.selectedKit = b.dataset.equipKit; saveProfile(); buildShop(); });
+  for (const b of document.querySelectorAll('[data-buy-skin]')) b.addEventListener('click', () => buySkin(b.dataset.buySkin));
+  for (const b of document.querySelectorAll('[data-equip-skin]')) b.addEventListener('click', () => { profile.selectedSkin = b.dataset.equipSkin; saveProfile(); buildShop(); });
+}
+
+function buyKit(id) {
+  const kit = KITS[id];
+  if (!kit || profile.ownedKits.includes(id) || profile.coins < kit.price) return;
+  profile.coins -= kit.price;
+  profile.ownedKits.push(id);
+  profile.selectedKit = id;
+  saveProfile();
+  buildShop();
+  refreshMenu();
+}
+function buySkin(id) {
+  const skin = SKINS[id];
+  if (!skin || profile.ownedSkins.includes(id) || profile.coins < skin.price) return;
+  profile.coins -= skin.price;
+  profile.ownedSkins.push(id);
+  profile.selectedSkin = id;
+  saveProfile();
+  buildShop();
+}
+
+// ---- customize ----
+function buildCustomize() {
+  $('cust-coins').textContent = profile.coins;
+  const kitWrap = $('cust-kits');
+  kitWrap.innerHTML = '';
+  for (const id of profile.ownedKits) {
+    const kit = KITS[id]; if (!kit) continue;
+    const card = document.createElement('div');
+    card.className = 'card' + (kit.special ? ' special' : '') + (profile.selectedKit === id ? ' selected' : '');
+    card.innerHTML = `<div class="ct">${kit.name}</div><div class="cl">${kit.loadout}</div>` +
+      (profile.selectedKit === id ? `<button class="cbtn equipped" disabled>Equipped</button>` : `<button class="cbtn" data-equip-kit="${id}">Equip</button>`);
+    kitWrap.appendChild(card);
+  }
+  const skinWrap = $('cust-skins');
+  skinWrap.innerHTML = '';
+  for (const id of profile.ownedSkins) {
+    const skin = SKINS[id]; if (!skin) continue;
+    const card = document.createElement('div');
+    card.className = 'card skin' + (profile.selectedSkin === id ? ' selected' : '');
+    card.innerHTML = `<div class="sw" style="background:${skin.swatch}"></div><div class="ct">${skin.name}</div>` +
+      (profile.selectedSkin === id ? `<button class="cbtn equipped" disabled>Equipped</button>` : `<button class="cbtn" data-equip-skin="${id}">Equip</button>`);
+    skinWrap.appendChild(card);
+  }
+  const colWrap = $('cust-colors');
+  colWrap.innerHTML = '';
+  for (const col of TANK_COLORS) {
+    const sw = document.createElement('div');
+    sw.className = 'swatch' + (profile.color.toLowerCase() === col.toLowerCase() ? ' selected' : '');
+    sw.style.background = col;
+    sw.addEventListener('click', () => { profile.color = col; saveProfile(); buildCustomize(); });
+    colWrap.appendChild(sw);
+  }
+  for (const b of document.querySelectorAll('#cust-kits [data-equip-kit]')) b.addEventListener('click', () => { profile.selectedKit = b.dataset.equipKit; saveProfile(); buildCustomize(); refreshMenu(); });
+  for (const b of document.querySelectorAll('#cust-skins [data-equip-skin]')) b.addEventListener('click', () => { profile.selectedSkin = b.dataset.equipSkin; saveProfile(); buildCustomize(); });
+}
+
+// ---- auth ----
+let authMode = 'signin';
+function showAuth() {
+  $('auth-error').textContent = '';
+  setAuthMode('signin');
+  showScreen('screen-auth');
+}
+function setAuthMode(m) {
+  authMode = m;
+  $('auth-name').classList.toggle('hidden', m !== 'signup');
+  $('auth-submit').textContent = m === 'signup' ? 'Create Account' : 'Sign In';
+  $('auth-title').textContent = m === 'signup' ? 'Create an account to save your progress.' : 'Sign in to save coins, kits & stats.';
+  $('auth-toggle').textContent = m === 'signup' ? 'Have an account? Sign in' : 'New here? Create an account';
+}
+$('auth-toggle').addEventListener('click', () => setAuthMode(authMode === 'signin' ? 'signup' : 'signin'));
+$('auth-guest').addEventListener('click', async () => {
+  guestMode = true; authUser = null;
+  await loadProfileFor(null);
+  enterMenu();
+});
+$('auth-google').addEventListener('click', async () => {
+  $('auth-error').textContent = '';
+  try { await FB.signInGoogle(); } // success handled by watchAuth
+  catch (err) { $('auth-error').textContent = FB.friendlyAuthError(err); }
+});
+$('auth-submit').addEventListener('click', async () => {
+  $('auth-error').textContent = '';
+  const email = $('auth-email').value.trim();
+  const pass = $('auth-password').value;
+  const name = $('auth-name').value.trim();
+  if (!email || !pass) { $('auth-error').textContent = 'Enter your email and password.'; return; }
+  try {
+    if (authMode === 'signup') await FB.signUpEmail(email, pass, name || email.split('@')[0]);
+    else await FB.signInEmail(email, pass);
+  } catch (err) {
+    $('auth-error').textContent = FB.friendlyAuthError(err);
+  }
+});
+
+// ======================================================================
+//  Boot sequence
+// ======================================================================
+function setLoad(pct, msg) {
+  $('load-fill').style.width = `${Math.round(pct)}%`;
+  if (msg) $('load-msg').textContent = msg;
+}
+
+async function boot() {
+  showScreen('screen-loading');
+  setLoad(8, 'Connecting…');
+  await FB.firebaseReady;            // resolves regardless of success
+  setLoad(25, 'Loading battlefield assets…');
+  await preloadModel((p) => setLoad(25 + p * 65, 'Loading tank model…'));
+  setLoad(100, 'Ready');
+
+  if (FB.isReady()) {
+    FB.watchAuth(async (user) => {
+      authUser = user;
+      if (user) {
+        guestMode = false;
+        await loadProfileFor(user);
+        enterMenu();
+      } else if (!guestMode) {
+        showAuth();
+      }
+    });
+  } else {
+    // Firebase unavailable: go straight to the auth screen; only Guest will work.
+    showAuth();
+  }
+}
+boot();

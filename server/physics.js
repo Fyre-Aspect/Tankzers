@@ -19,7 +19,9 @@ function heightAt(world, hm, x) {
   return hm[i];
 }
 
-function simulateProjectile(world, hm, tanks, shooterId, origin, velocity, wind) {
+// Walk a projectile through the world. Stops on the first thing it hits:
+// an enemy tank, a destructible prop, the terrain, or the world bounds.
+function simulateProjectile(world, hm, tanks, props, shooterId, origin, velocity, wind) {
   const { cols } = world;
   let x = origin.x, y = origin.y;
   let vx = velocity.x, vy = velocity.y;
@@ -28,6 +30,7 @@ function simulateProjectile(world, hm, tanks, shooterId, origin, velocity, wind)
   const trajectory = [{ x, y }];
   let impact = null;
   let hitTankId = null;
+  let hitPropId = null;
 
   for (let step = 0; step < MAX_STEPS; step++) {
     vx += ax;
@@ -47,6 +50,22 @@ function simulateProjectile(world, hm, tanks, shooterId, origin, velocity, wind)
       }
     }
     if (impact) break;
+
+    // Destructible scenery: a direct hit detonates the shell on the prop.
+    if (props) {
+      for (const p of props) {
+        if (!p.alive) continue;
+        const dx = p.x - x;
+        const dy = (p.y + p.r * 0.6) - y;
+        const rr = (p.r + 1.5);
+        if (dx * dx + dy * dy <= rr * rr) {
+          hitPropId = p.id;
+          impact = { x, y };
+          break;
+        }
+      }
+      if (impact) break;
+    }
 
     if (x >= 0 && x <= cols - 1) {
       const h = heightAt(world, hm, x);
@@ -69,7 +88,7 @@ function simulateProjectile(world, hm, tanks, shooterId, origin, velocity, wind)
   }
 
   if (!impact) impact = { x, y };
-  return { trajectory, impact, hitTankId };
+  return { trajectory, impact, hitTankId, hitPropId };
 }
 
 // A roller settles by following the terrain downhill from its impact point.
@@ -132,10 +151,42 @@ function applyDamage(tanks, impact, radius, maxDamage) {
   return damages;
 }
 
+
+// Blast damage against destructible props. Returns the props destroyed by it.
+function applyDamageToProps(props, impact, radius, maxDamage) {
+  const destroyed = [];
+  if (!props) return destroyed;
+  for (const p of props) {
+    if (!p.alive) continue;
+    const dx = p.x - impact.x;
+    const dy = (p.y + p.r * 0.6) - impact.y;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d > radius + p.r) continue;
+    const dmg = Math.round(maxDamage * (1 - d / (radius + p.r)));
+    if (dmg <= 0) continue;
+    p.hp -= dmg;
+    if (p.hp <= 0) {
+      p.hp = 0;
+      p.alive = false;
+      destroyed.push(p);
+    }
+  }
+  return destroyed;
+}
+
 function settleTanks(world, hm, tanks) {
   for (const t of tanks) {
     if (!t.alive) continue;
     t.y = heightAt(world, hm, t.x);
+  }
+}
+
+// Props sitting on carved-away ground drop to the new surface.
+function settleProps(world, hm, props) {
+  if (!props) return;
+  for (const p of props) {
+    if (!p.alive) continue;
+    p.y = heightAt(world, hm, p.x);
   }
 }
 
@@ -148,5 +199,7 @@ module.exports = {
   rollAlongTerrain,
   carveCrater,
   applyDamage,
+  applyDamageToProps,
   settleTanks,
+  settleProps,
 };

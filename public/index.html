@@ -9,7 +9,10 @@
     {
       "imports": {
         "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+        "firebase/app": "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js",
+        "firebase/auth": "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js",
+        "firebase/firestore": "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js"
       }
     }
   </script>
@@ -17,14 +20,15 @@
 <body>
   <div id="scene"></div>
 
+  <!-- ============ in-game HUD ============ -->
   <div id="hud">
     <div class="hud-box" id="hud-turn">Connecting…</div>
+    <div class="hud-box" id="hud-biome"></div>
     <div class="hud-box" id="hud-wind"><span>Wind</span> <span id="wind-arrow">•</span> <span id="wind-mag">0</span></div>
     <div class="hud-box" id="hud-room"></div>
   </div>
 
   <div id="teams"></div>
-
   <div id="log"></div>
 
   <!-- left-hand drive pad (also works with A / D / arrow keys) -->
@@ -55,23 +59,142 @@
     <button id="fire-btn" disabled>FIRE</button>
   </div>
 
-  <div id="overlay">
-    <div class="panel">
-      <h1>Tankzers <span class="dim">3D</span></h1>
-      <div class="modes">
-        <button class="mode-btn selected" data-mode="1v1">1v1</button>
-        <button class="mode-btn" data-mode="2v2">2v2</button>
-      </div>
-      <button id="create-btn">Create Room</button>
-      <div class="join">
-        <input type="text" id="join-code" maxlength="4" placeholder="CODE" />
-        <button id="join-btn">Join</button>
-      </div>
-      <p id="overlay-msg"></p>
-    </div>
-  </div>
+  <div id="hint">Drag the battlefield to aim · scroll to zoom · A/D to drive · destroy crates &amp; enemies to heal</div>
 
-  <div id="hint">Drag the battlefield to aim · scroll to zoom · A/D to drive</div>
+  <!-- ============ overlay screens ============ -->
+  <div id="overlay">
+
+    <!-- loading -->
+    <div class="screen active" id="screen-loading">
+      <div class="panel">
+        <h1 class="logo">Tankzers <span class="dim">3D</span></h1>
+        <div class="loadbar"><div class="loadbar-fill" id="load-fill"></div></div>
+        <p class="muted" id="load-msg">Loading…</p>
+      </div>
+    </div>
+
+    <!-- auth / login -->
+    <div class="screen" id="screen-auth">
+      <div class="panel">
+        <h1 class="logo">Tankzers <span class="dim">3D</span></h1>
+        <p class="muted" id="auth-title">Sign in to save coins, kits &amp; stats.</p>
+        <input type="text" id="auth-name" class="field hidden" placeholder="Display name" maxlength="14" autocomplete="nickname" />
+        <input type="email" id="auth-email" class="field" placeholder="Email" autocomplete="email" />
+        <input type="password" id="auth-password" class="field" placeholder="Password" autocomplete="current-password" />
+        <button class="btn btn-primary" id="auth-submit">Sign In</button>
+        <button class="btn btn-google" id="auth-google"><span class="g">G</span> Continue with Google</button>
+        <div class="auth-row">
+          <button class="linkbtn" id="auth-toggle">New here? Create an account</button>
+          <button class="linkbtn" id="auth-guest">Play as guest →</button>
+        </div>
+        <p class="errmsg" id="auth-error"></p>
+      </div>
+    </div>
+
+    <!-- main menu -->
+    <div class="screen" id="screen-menu">
+      <div class="panel panel-wide">
+        <div class="menu-head">
+          <h1 class="logo sm">Tankzers <span class="dim">3D</span></h1>
+          <div class="coinpill"><span class="coin">◎</span> <b id="menu-coins">0</b></div>
+        </div>
+        <p class="muted">Welcome, <b id="menu-name">Player</b> · Kit: <b id="menu-kit-name">Recruit</b></p>
+
+        <div class="modes" id="menu-modes">
+          <button class="mode-btn selected" data-mode="1v1">1 v 1</button>
+          <button class="mode-btn" data-mode="2v2">2 v 2</button>
+        </div>
+
+        <button class="btn btn-primary big" id="btn-quick">⚡ Quick Match</button>
+
+        <div class="row2">
+          <button class="btn" id="btn-create">Create Room</button>
+          <div class="join">
+            <input type="text" id="join-code" maxlength="4" placeholder="CODE" />
+            <button class="btn" id="btn-join">Join</button>
+          </div>
+        </div>
+
+        <div class="row2">
+          <button class="btn btn-alt" id="btn-customize">🛠 Customize</button>
+          <button class="btn btn-alt" id="btn-shop">🛒 Shop</button>
+        </div>
+
+        <div class="menu-foot">
+          <button class="linkbtn" id="btn-signout">Sign out</button>
+          <span class="muted small" id="menu-msg"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- matchmaking queue -->
+    <div class="screen" id="screen-queue">
+      <div class="panel">
+        <h1 class="logo sm">Quick Match</h1>
+        <div class="spinner"></div>
+        <p class="muted" id="queue-status">Searching for an opponent…</p>
+        <button class="btn btn-alt" id="btn-cancel-queue">Cancel</button>
+      </div>
+    </div>
+
+    <!-- waiting for room to fill -->
+    <div class="screen" id="screen-wait">
+      <div class="panel">
+        <h1 class="logo sm">Room <span id="wait-code" class="dim"></span></h1>
+        <div class="spinner"></div>
+        <p class="muted" id="wait-msg">Share the code. Waiting for players…</p>
+        <button class="btn btn-alt" id="btn-wait-cancel">Cancel</button>
+      </div>
+    </div>
+
+    <!-- shop -->
+    <div class="screen" id="screen-shop">
+      <div class="panel panel-wide">
+        <div class="menu-head">
+          <h1 class="logo sm">Shop</h1>
+          <div class="coinpill"><span class="coin">◎</span> <b id="shop-coins">0</b></div>
+        </div>
+        <p class="muted">Earn coins by destroying scenery, scoring kills and winning matches.</p>
+        <h3 class="section">Kits</h3>
+        <div class="grid" id="shop-kits"></div>
+        <h3 class="section">Skins</h3>
+        <div class="grid" id="shop-skins"></div>
+        <button class="btn btn-alt back" id="btn-shop-back">← Back</button>
+      </div>
+    </div>
+
+    <!-- customize -->
+    <div class="screen" id="screen-customize">
+      <div class="panel panel-wide">
+        <div class="menu-head">
+          <h1 class="logo sm">Customize</h1>
+          <div class="coinpill"><span class="coin">◎</span> <b id="cust-coins">0</b></div>
+        </div>
+
+        <h3 class="section">Loadout (owned kits)</h3>
+        <div class="grid" id="cust-kits"></div>
+
+        <h3 class="section">Skin</h3>
+        <div class="grid skins" id="cust-skins"></div>
+
+        <h3 class="section">Tank colour</h3>
+        <div class="swatches" id="cust-colors"></div>
+
+        <button class="btn btn-alt back" id="btn-cust-back">← Back</button>
+      </div>
+    </div>
+
+    <!-- result -->
+    <div class="screen" id="screen-result">
+      <div class="panel">
+        <h1 id="result-title">Match over</h1>
+        <p class="muted" id="result-detail"></p>
+        <div class="reward" id="result-reward"></div>
+        <button class="btn btn-primary" id="btn-again">Back to Menu</button>
+      </div>
+    </div>
+
+  </div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script type="module" src="client.js"></script>
