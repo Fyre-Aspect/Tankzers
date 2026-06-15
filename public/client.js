@@ -1,6 +1,4 @@
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js';
 import { KITS, SKINS, TANK_COLORS, WEAPON_FX, defaultProfile, normalizeProfile } from './data.js';
 import * as FB from './firebase-config.js';
 
@@ -162,54 +160,16 @@ let composer = null;
 })();
 
 // ======================================================================
-//  Model preloading (robust, with progress + fallback)
+//  Tank model
 // ======================================================================
-let tankProto = null;
-let protoAlignY = 0;
-let protoScale = 1;
-const TARGET_LEN = 15;
-let modelState = 'pending'; // pending | ready | failed
-
+// The bundled models/tank.glb is corrupt (its body/track meshes are ~200x the
+// scale of the turret and scattered hundreds of units apart), so it can't be
+// used — tanks are built procedurally instead (see buildProceduralTank). This
+// no-op keeps the boot sequence intact and avoids a slow CDN fetch of a model
+// we don't use.
 function preloadModel(onProgress) {
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (s) => { if (!settled) { settled = true; modelState = s; resolve(s); } };
-    // Don't let a stalled CDN hang the menu forever.
-    const timeout = setTimeout(() => { if (!settled) { console.warn('[model] timeout — using procedural tanks'); finish('failed'); } }, 12000);
-
-    const tryLoad = (attempt) => {
-      new GLTFLoader().load(
-        'models/tank.glb',
-        (gltf) => {
-          clearTimeout(timeout);
-          const m = gltf.scene;
-          const box = new THREE.Box3().setFromObject(m);
-          const size = new THREE.Vector3();
-          box.getSize(size);
-          protoAlignY = size.z > size.x ? Math.PI / 2 : 0;
-          const lengthX = protoAlignY ? size.z : size.x;
-          protoScale = TARGET_LEN / (lengthX || 1);
-          tankProto = m;
-          finish('ready');
-          // upgrade any procedural tanks already on the field
-          for (const tank of state.tanks) {
-            const ref = tankMeshes.get(tank.id);
-            if (ref && ref.kind === 'proc') {
-              scene.remove(ref.group);
-              tankMeshes.delete(tank.id);
-              buildTank(tank);
-            }
-          }
-        },
-        (ev) => { if (onProgress && ev.total) onProgress(ev.loaded / ev.total); },
-        (err) => {
-          if (attempt < 1) { console.warn('[model] retrying…', err); tryLoad(attempt + 1); }
-          else { clearTimeout(timeout); console.warn('[model] failed — procedural tanks', err); finish('failed'); }
-        }
-      );
-    };
-    tryLoad(0);
-  });
+  if (onProgress) onProgress(1);
+  return Promise.resolve('procedural');
 }
 
 // ======================================================================
@@ -238,13 +198,89 @@ const aimArrow = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vec
 aimArrow.visible = false;
 scene.add(aimArrow);
 
-const PREVIEW_DOTS = 44;
-const previewGeo = new THREE.BufferGeometry();
-previewGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(PREVIEW_DOTS * 3), 3));
-const previewDots = new THREE.Points(previewGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 2.6, transparent: true, opacity: 0.85, sizeAttenuation: false }));
-previewDots.frustumCulled = false;
-previewDots.visible = false;
-scene.add(previewDots);
+// REMOVED: aiming guideline (predicted-trajectory dots). The player can no
+// longer see where the current shot will land — aiming is skill-based again.
+// (The old `previewDots`/`PREVIEW_DOTS`/`previewGeo` objects and updatePreview()
+//  below have been removed.)
+
+// FIX: per-player shot trails (was a single shared `prevTrailGroup` that got
+// wiped on every shot, so one player's trail vanished the instant another fired).
+// Now each shooter owns a THREE.Group keyed by their id, so trails are fully
+// independent: firing only ever touches the shooter's own group, and ALL groups
+// stay in the scene until the round is reset. Built from the server-sent
+// trajectory + shooterId in `shotResolved`, so every client renders the same
+// trails (multiplayer-consistent) with no extra networking.
+const playerTrails = new Map();      // shooterId -> { group, lines: [] }
+const MAX_TRAILS_PER_PLAYER = 5;     // FIX: cap per-player history to bound memory on long matches
+
+// Build one faded line from a projectile's trajectory. Brightness ramps origin →
+// impact so it reads as a fading "comet" tail.
+function buildTrailLine(trajectory, base) {
+  const pts = trajectory;
+  if (!pts || pts.length < 2) return null;
+  // down-sample long trajectories so each line stays cheap (~60 verts max)
+  const stride = Math.max(1, Math.floor(pts.length / 60));
+  const sampled = [];
+  for (let i = 0; i < pts.length; i += stride) sampled.push(pts[i]);
+  if (sampled[sampled.length - 1] !== pts[pts.length - 1]) sampled.push(pts[pts.length - 1]);
+  const positions = [];
+  const colors = [];
+  const n = sampled.length;
+  for (let i = 0; i < n; i++) {
+    positions.push(sampled[i].x, sampled[i].y, 0);
+    const a = 0.15 + (i / (n - 1)) * 0.85;
+    colors.push(base.r * a, base.g * a, base.b * a);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  const line = new THREE.Line(geo, new THREE.LineBasicMaterial({
+    vertexColors: true, transparent: true, opacity: 0.6, depthWrite: false,
+  }));
+  line.renderOrder = 2;
+  return line;
+}
+
+// FIX: append a just-resolved shot to ITS shooter's own trail only — never clears
+// or overwrites any other player's trail.
+function addShotTrail(shooterId, projectiles) {
+  let entry = playerTrails.get(shooterId);
+  if (!entry) {
+    entry = { group: new THREE.Group(), lines: [] };
+    scene.add(entry.group);
+    playerTrails.set(shooterId, entry);
+  }
+  // tint by the shooter's tank colour so you can tell whose trail is whose
+  const shooter = state.tanks.find((t) => t.id === shooterId);
+  const base = new THREE.Color(shooter ? shooter.color : '#ffcc66');
+  // dim this player's older shots so their newest shot reads strongest
+  for (const old of entry.lines) old.material.opacity *= 0.55;
+  for (const proj of projectiles) {
+    const line = buildTrailLine(proj.trajectory, base);
+    if (!line) continue;
+    entry.group.add(line);
+    entry.lines.push(line);
+  }
+  // FIX: cap this player's history (drop oldest) to prevent unbounded growth
+  while (entry.lines.length > MAX_TRAILS_PER_PLAYER) {
+    const old = entry.lines.shift();
+    entry.group.remove(old);
+    old.geometry.dispose();
+    old.material.dispose();
+  }
+}
+
+// FIX: clear EVERY player's trail — called only on a new round/match, never per shot.
+function clearAllTrails() {
+  for (const { group } of playerTrails.values()) {
+    scene.remove(group);
+    group.traverse((o) => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) o.material.dispose();
+    });
+  }
+  playerTrails.clear();
+}
 
 const dustTex = makeRadialTexture('rgba(180,160,130,0.8)', 'rgba(180,160,130,0)');
 const dustPool = [];
@@ -601,67 +637,21 @@ function facingFor(tank) {
 }
 
 function buildTank(tank) {
-  if (tankProto) buildModelTank(tank);
-  else buildProceduralTank(tank);
+  // NOTE: the bundled models/tank.glb is corrupt — its body/track meshes are
+  // ~200x the scale of the turret and flung hundreds of units apart, so once the
+  // model is normalised the tank renders as an invisible/garbled mess. Tanks are
+  // therefore always built procedurally; the procedural tank looks good and fully
+  // supports colour + skin customisation.
+  buildProceduralTank(tank);
 }
 
-function buildModelTank(tank) {
+// Builds the visual tank (hull, turret, tracks, barrel) for a given colour/skin
+// WITHOUT the HP bar / flag / scene registration, so it can be reused for both
+// the in-game tank and the customize-screen preview.
+function createTankVisual(opts) {
   const group = new THREE.Group();
-  const modelGroup = new THREE.Group();
-  const inner = skeletonClone(tankProto);
-  inner.rotation.y = protoAlignY;
-  inner.scale.setScalar(protoScale);
-  inner.updateWorldMatrix(true, true);
-  const box = new THREE.Box3().setFromObject(inner);
-  const c = new THREE.Vector3();
-  box.getCenter(c);
-  inner.position.x -= c.x;
-  inner.position.z -= c.z;
-  inner.position.y -= box.min.y;
-
-  const style = SKIN_STYLE[tank.skin] || SKIN_STYLE.default;
-  const base = tankBaseColor(tank);
-  const accent = new THREE.Color(tank.color);
-  inner.traverse((o) => {
-    if (!o.isMesh) return;
-    o.castShadow = true;
-    o.receiveShadow = true;
-    o.frustumCulled = false;
-    const tint = (m) => {
-      const mm = m.clone();
-      const n = (m.name || '').toLowerCase();
-      if (n.includes('main') && !n.includes('dark') && !n.includes('detail')) {
-        mm.color = base.clone();
-        if (n.includes('light')) mm.color.lerp(accent, 0.4).multiplyScalar(1.15);
-        mm.metalness = style.metal;
-        mm.roughness = style.rough;
-        if (style.emissive) { mm.emissive = new THREE.Color(style.emissive); mm.emissiveIntensity = 0.6; }
-      }
-      return mm;
-    };
-    o.material = Array.isArray(o.material) ? o.material.map(tint) : tint(o.material);
-  });
-  modelGroup.add(inner);
-  group.add(modelGroup);
-
-  const flash = makeFlash(TARGET_LEN * 0.55, 5);
-  modelGroup.add(flash);
-
-  const { hpGroup, hpFill } = makeHpGroup(tank.color, 14);
-  group.add(hpGroup);
-  group.add(makeTeamFlag(tank.teamColor || tank.color, 11));
-
-  group.position.set(tank.x, tank.y, 0);
-  modelGroup.rotation.y = facingFor(tank);
-  scene.add(group);
-  tankMeshes.set(tank.id, { kind: 'model', group, modelGroup, barrelPivot: null, flash, hpFill, hpGroup, targetX: tank.x, targetY: tank.y, flashT: 0 });
-  updateHpBar(tank);
-}
-
-function buildProceduralTank(tank) {
-  const group = new THREE.Group();
-  const style = SKIN_STYLE[tank.skin] || SKIN_STYLE.default;
-  const team = tankBaseColor(tank);
+  const style = SKIN_STYLE[opts.skin] || SKIN_STYLE.default;
+  const team = style.base != null ? new THREE.Color(style.base) : new THREE.Color(opts.color || '#4ad9ff');
   const dark = team.clone().multiplyScalar(0.7);
   const trackMat = mat(0x23272e, 0.95, 0.1);
 
@@ -723,9 +713,19 @@ function buildProceduralTank(tank) {
   muzzle.position.x = 8.8;
   barrelPivot.add(muzzle);
 
+  if (style.emissive) {
+    for (const m of [upper, glacis, turret]) { m.material.emissive = new THREE.Color(style.emissive); m.material.emissiveIntensity = 0.5; }
+  }
+
+  group.add(barrelPivot);
+  return { group, barrelPivot };
+}
+
+function buildProceduralTank(tank) {
+  const { group, barrelPivot } = createTankVisual({ color: tank.color, skin: tank.skin });
+
   const flash = makeFlash(9.8, 0);
   barrelPivot.add(flash);
-  group.add(barrelPivot);
 
   const { hpGroup, hpFill } = makeHpGroup(tank.color, 12);
   group.add(hpGroup);
@@ -1124,6 +1124,7 @@ function cleanupGame() {
   floaters.length = 0;
   anim = null; pending = null; trailPoints = [];
   projectileMesh.visible = false; projLight.intensity = 0; trail.visible = false;
+  clearAllTrails(); // FIX: clear EVERY player's trail — only here, at the start of a new round/match
 }
 
 socket.on('roomCreated', ({ code, mode, capacity }) => {
@@ -1214,8 +1215,12 @@ socket.on('tankMoved', ({ id, x, y, fuel, collected, pickups }) => {
 
 socket.on('shotResolved', (data) => {
   pending = data;
-  anim = { projectiles: data.projectiles, pi: 0, prog: 0, phase: 'fly', boom: 0 };
+  // FIX: keep data.shooterId on the anim so the finished shot is attributed to the
+  // correct player's trail (was anonymous before).
+  anim = { projectiles: data.projectiles, pi: 0, prog: 0, phase: 'fly', boom: 0, shooterId: data.shooterId };
   trailPoints = [];
+  // FIX: do NOT clear trails here — a player firing must not erase anyone's trail,
+  // not even their own (older shots are dimmed/capped in addShotTrail instead).
   driveDir = 0;
   dom.fireBtn.disabled = true;
   updateControls();
@@ -1336,35 +1341,9 @@ function updateAim() {
   aimArrow.visible = true;
 }
 
-function updatePreview() {
-  if (!isMyTurn()) { previewDots.visible = false; return; }
-  const me = myTank();
-  if (!me) { previewDots.visible = false; return; }
-  const ang = (Number(dom.angle.value) * Math.PI) / 180;
-  const wdef = state.weaponDefs ? state.weaponDefs[state.currentWeapon] : null;
-  const speed = Number(dom.power.value) * PHYS.POWER_SCALE * (wdef ? wdef.powerMult : 1);
-  let x = me.x + Math.cos(ang) * BARREL_LEN;
-  let y = me.y + TURRET_Y + Math.sin(ang) * BARREL_LEN;
-  let vx = Math.cos(ang) * speed, vy = Math.sin(ang) * speed;
-  const ax = state.wind * PHYS.WIND_SCALE;
-  const cols = state.world.cols;
-  const arr = previewGeo.attributes.position.array;
-  const STRIDE = 5;
-  let n = 0;
-  for (let i = 0; i < PREVIEW_DOTS * STRIDE && n < PREVIEW_DOTS; i++) {
-    vx += ax; vy -= PHYS.GRAVITY; x += vx; y += vy;
-    let stop = false;
-    if (x < -50 || x > cols + 50) break;
-    if (x >= 0 && x <= cols - 1 && y <= heightAtClient(x)) stop = true;
-    if (i % STRIDE === 0 || stop) { arr[n * 3] = x; arr[n * 3 + 1] = y; arr[n * 3 + 2] = 0; n++; }
-    if (stop) break;
-  }
-  previewGeo.setDrawRange(0, n);
-  previewGeo.attributes.position.needsUpdate = true;
-  const fx = WEAPON_FX[state.currentWeapon] || WEAPON_FX.standard;
-  previewDots.material.color.setHex(fx.proj);
-  previewDots.visible = n > 1;
-}
+// REMOVED: updatePreview() — drew the predicted trajectory of the shot currently
+// being aimed (the "guideline"). Deleted so aiming gives no landing hint. The
+// post-shot reference is now provided by the per-player trails (addShotTrail).
 
 function stepAnim(dt) {
   if (!anim) return;
@@ -1401,7 +1380,11 @@ function stepAnim(dt) {
     anim.boom += dt;
     if (anim.boom >= BOOM_TIME) {
       anim.pi += 1;
-      if (anim.pi >= anim.projectiles.length) { anim = null; applyPending(); }
+      if (anim.pi >= anim.projectiles.length) {
+        addShotTrail(anim.shooterId, anim.projectiles); // FIX: append to this shooter's own trail (per-player, persists)
+        anim = null;
+        applyPending();
+      }
       else { anim.phase = 'fly'; anim.prog = 0; trailPoints = []; }
     }
   }
@@ -1474,7 +1457,8 @@ function animate() {
 
   updateDust(dt);
   updateAim();
-  updatePreview();
+  // REMOVED: updatePreview() call — aiming guideline disabled. (The aim arrow in
+  // updateAim() is kept: it shows direction/power but not the parabola/landing.)
   updateCamera(dt);
 
   if (composer) composer.render();
@@ -1587,7 +1571,7 @@ $('btn-join').addEventListener('click', () => {
 $('btn-wait-cancel').addEventListener('click', () => location.reload());
 $('btn-again').addEventListener('click', () => { state.world = null; enterMenu(); });
 $('btn-shop').addEventListener('click', () => { buildShop(); showScreen('screen-shop'); });
-$('btn-customize').addEventListener('click', () => { buildCustomize(); showScreen('screen-customize'); });
+$('btn-customize').addEventListener('click', () => { showScreen('screen-customize'); buildCustomize(); });
 $('btn-shop-back').addEventListener('click', enterMenu);
 $('btn-cust-back').addEventListener('click', enterMenu);
 $('btn-signout').addEventListener('click', async () => {
@@ -1661,6 +1645,71 @@ function buySkin(id) {
   buildShop();
 }
 
+// ---- customize: live 3D tank preview ----
+let pv = null; // { renderer, scene, camera, tank, raf, dragging, lastX, yaw }
+function initTankPreview() {
+  const host = $('cust-preview');
+  if (!host || pv) return;
+  const w = host.clientWidth || 320;
+  const h = host.clientHeight || 180;
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(w, h);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  host.appendChild(renderer.domElement);
+
+  const pscene = new THREE.Scene();
+  pscene.add(new THREE.HemisphereLight(0xffffff, 0x4a5a3a, 1.15));
+  const key = new THREE.DirectionalLight(0xfff2d8, 1.5); key.position.set(18, 26, 20); pscene.add(key);
+  const rim = new THREE.DirectionalLight(0x9fd0ff, 0.6); rim.position.set(-16, 10, -14); pscene.add(rim);
+
+  const camera = new THREE.PerspectiveCamera(32, w / h, 0.5, 400);
+  camera.position.set(24, 15, 27);
+  camera.lookAt(0, 4, 0);
+
+  pv = { renderer, scene: pscene, camera, tank: null, raf: null, dragging: false, lastX: 0, yaw: 0.6 };
+
+  // drag to spin
+  host.addEventListener('pointerdown', (e) => { pv.dragging = true; pv.lastX = e.clientX; host.setPointerCapture(e.pointerId); });
+  host.addEventListener('pointermove', (e) => { if (pv && pv.dragging) { pv.yaw += (e.clientX - pv.lastX) * 0.01; pv.lastX = e.clientX; } });
+  host.addEventListener('pointerup', (e) => { if (pv) pv.dragging = false; });
+  window.addEventListener('resize', resizeTankPreview);
+}
+function resizeTankPreview() {
+  if (!pv) return;
+  const host = $('cust-preview'); if (!host) return;
+  const w = host.clientWidth || 320, h = host.clientHeight || 180;
+  pv.renderer.setSize(w, h);
+  pv.camera.aspect = w / h; pv.camera.updateProjectionMatrix();
+}
+function updateTankPreview() {
+  initTankPreview();
+  if (!pv) return;
+  if (pv.tank) {
+    pv.scene.remove(pv.tank);
+    pv.tank.traverse((o) => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); } });
+    pv.tank = null;
+  }
+  const { group } = createTankVisual({ color: profile.color, skin: profile.selectedSkin });
+  // centre the tank in view (the model spans x:-6..10, so shift left a touch)
+  group.position.set(-2, 0, 0);
+  const holder = new THREE.Group();
+  holder.add(group);
+  pv.tank = holder;
+  pv.scene.add(holder);
+  if (!pv.raf) {
+    const loop = () => {
+      if (!pv) return;
+      if (!$('screen-customize').classList.contains('active')) { pv.raf = null; return; } // stop when hidden
+      pv.raf = requestAnimationFrame(loop);
+      if (!pv.dragging) pv.yaw += 0.008;
+      if (pv.tank) pv.tank.rotation.y = pv.yaw;
+      pv.renderer.render(pv.scene, pv.camera);
+    };
+    loop();
+  }
+}
+
 // ---- customize ----
 function buildCustomize() {
   $('cust-coins').textContent = profile.coins;
@@ -1695,6 +1744,8 @@ function buildCustomize() {
   }
   for (const b of document.querySelectorAll('#cust-kits [data-equip-kit]')) b.addEventListener('click', () => { profile.selectedKit = b.dataset.equipKit; saveProfile(); buildCustomize(); refreshMenu(); });
   for (const b of document.querySelectorAll('#cust-skins [data-equip-skin]')) b.addEventListener('click', () => { profile.selectedSkin = b.dataset.equipSkin; saveProfile(); buildCustomize(); });
+
+  updateTankPreview();
 }
 
 // ---- auth ----
@@ -1748,8 +1799,8 @@ async function boot() {
   showScreen('screen-loading');
   setLoad(8, 'Connecting…');
   await FB.firebaseReady;            // resolves regardless of success
-  setLoad(25, 'Loading battlefield assets…');
-  await preloadModel((p) => setLoad(25 + p * 65, 'Loading tank model…'));
+  setLoad(40, 'Preparing battlefield…');
+  await preloadModel((p) => setLoad(40 + p * 50, 'Preparing battlefield…'));
   setLoad(100, 'Ready');
 
   if (FB.isReady()) {

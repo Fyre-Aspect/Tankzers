@@ -645,4 +645,4 @@ function sanitizeProfile(p) {
   };
 }
 
-module.exports = { Game, WEAPONS, KITS, SKINS, capacityFor, sanitizeProfile };
+module.exports = { Game, WEAPONS, KITS, SKINS, capacityFor, sanitizeProfile }
