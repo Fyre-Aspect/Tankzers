@@ -62,6 +62,7 @@ const state = {
   moveRange: 60,
   maxHp: 100,
   biome: null,
+  botIds: [],
 };
 
 let selectedMode = '1v1';
@@ -1212,6 +1213,7 @@ function openCrateSpinner(wonWeapon) {
 
 function myTank() { return state.tanks.find((t) => t.id === state.youId); }
 function activeTank() { return state.tanks.find((t) => t.id === state.activePlayerId); }
+function isBot(id) { return state.botIds.includes(id); }
 
 function refreshHud() {
   if (state.gameOver) {
@@ -1220,7 +1222,8 @@ function refreshHud() {
     dom.hudTurn.textContent = 'Your turn — drive & fire';
   } else {
     const t = activeTank();
-    dom.hudTurn.textContent = `${t ? t.name : 'Opponent'}'s turn`;
+    const who = t ? t.name : 'Opponent';
+    dom.hudTurn.textContent = isBot(state.activePlayerId) ? `🤖 ${who} is taking aim…` : `${who}'s turn`;
   }
   dom.windMag.textContent = Math.abs(state.wind);
   dom.windArrow.textContent = state.wind === 0 ? '•' : '➤';
@@ -1244,7 +1247,7 @@ function buildTeams() {
     const name = document.createElement('span');
     name.className = 'hp-name';
     name.style.color = tank.color;
-    name.textContent = tank.id === state.youId ? `${tank.name} (you)` : tank.name;
+    name.textContent = tank.id === state.youId ? `${tank.name} (you)` : isBot(tank.id) ? `${tank.name} 🤖` : tank.name;
     const bar = document.createElement('div');
     bar.className = 'hp-bar';
     const fill = document.createElement('div');
@@ -1488,6 +1491,7 @@ socket.on('gameStart', (data) => {
   state.moveRange = data.moveRange || 60;
   state.maxHp = data.maxHp || 100;
   state.biome = data.biome;
+  state.botIds = data.bots || [];
   state.gameOver = false;
 
   // biome-driven visuals

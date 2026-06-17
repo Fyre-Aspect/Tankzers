@@ -35,8 +35,9 @@ function profileFor(socket) {
 function startGame(room, code) {
   const players = room.players.map((id) => ({ id, ...room.profiles.get(id) }));
   room.game = new Game(players, room.mode);
+  const botIds = room.bots ? [...room.bots] : [];
   for (const id of room.players) {
-    io.to(id).emit('gameStart', { youId: id, code, ...room.game.state() });
+    io.to(id).emit('gameStart', { youId: id, code, bots: botIds, ...room.game.state() });
   }
 }
 
