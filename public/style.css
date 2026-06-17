@@ -518,6 +518,9 @@ h3.section::after { content: ''; flex: 1; height: 2px; border-radius: 2px; backg
 
 .row2 { display: flex; gap: 10px; margin-bottom: 4px; }
 .row2 > .btn { margin-bottom: 8px; }
+/* inside labelled sections the section spacing handles the rhythm — keep rows tight and balanced */
+.menu-section .row2 { margin: 0; }
+.menu-section .row2 > .btn { flex: 1; margin-bottom: 0; }
 .join { display: flex; gap: 6px; flex: 1; }
 .join input {
   flex: 1;
