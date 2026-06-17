@@ -494,7 +494,12 @@ h3.section::after { content: ''; flex: 1; height: 2px; border-radius: 2px; backg
   box-shadow: 0 4px 0 rgba(207, 122, 23, 0.3);
 }
 .coinpill .coin { color: var(--gold-deep); }
-.modes { display: flex; gap: 10px; justify-content: center; margin: 16px 0; }
+/* grouped play sections inside the menu */
+.menu-section { margin-bottom: 22px; }
+.menu-section:last-of-type { margin-bottom: 0; }
+.menu-section > .section:first-child { margin-top: 0; }
+
+.modes { display: flex; gap: 10px; justify-content: center; margin: 0 0 14px; }
 .mode-btn {
   flex: 1;
   padding: 12px;
