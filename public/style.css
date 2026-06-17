@@ -538,7 +538,16 @@ h3.section::after { content: ''; flex: 1; height: 2px; border-radius: 2px; backg
 }
 .join input:focus { outline: none; border-color: var(--cyan); }
 .join .btn { width: auto; padding: 11px 18px; margin: 0; }
-.menu-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; }
+.menu-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 2px solid rgba(42, 49, 66, 0.1);
+}
 
 /* spinner */
 .spinner {
@@ -651,4 +660,11 @@ h3.section::after { content: ''; flex: 1; height: 2px; border-radius: 2px; backg
   .grid.skins { grid-template-columns: repeat(2, 1fr); }
   .panel-wide { width: 100%; }
   #cust-preview { height: 170px; }
+
+  /* let the menu action rows breathe and stack on small screens */
+  .panel { padding: 22px 20px 20px; }
+  .menu-section .row2 { flex-wrap: wrap; }
+  .menu-section .row2 > .btn,
+  .menu-section .row2 > .join { flex: 1 1 100%; }
+  .menu-foot { justify-content: center; }
 }
