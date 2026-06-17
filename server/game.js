@@ -29,6 +29,18 @@ const WEAPONS = {
               cluster: { count: 5, span: 34, radius: 12, damage: 26 } },
   roller:   { id: 'roller',   name: 'Roller',   blastRadius: 18, damage: 42, projectiles: 1, spread: 0, powerMult: 1,
               roller: { maxDist: 48 } },
+
+  // --- chaos / elemental shots ------------------------------------------
+  napalm:    { id: 'napalm',    name: 'Napalm',    blastRadius: 12, damage: 20, projectiles: 1, spread: 0, powerMult: 1,
+               napalm: { span: 26, turns: 2, dmgPerTurn: 14 } },
+  mortar:    { id: 'mortar',    name: 'Mortar Barrage', blastRadius: 9, damage: 14, projectiles: 1, spread: 0, powerMult: 1,
+               mortar: { count: 6, span: 64, radius: 11, damage: 20 } },
+  earthmover:{ id: 'earthmover',name: 'Earthmover',blastRadius: 7,  damage: 8,  projectiles: 1, spread: 0, powerMult: 1,
+               earth: { radius: 16, height: 34 } },
+  lightning: { id: 'lightning', name: 'Lightning', blastRadius: 11, damage: 40, projectiles: 1, spread: 0, powerMult: 1,
+               chain: { range: 72, radius: 9, damage: 26 } },
+  blackhole: { id: 'blackhole', name: 'Black Hole',blastRadius: 22, damage: 30, projectiles: 1, spread: 0, powerMult: 1,
+               pull: { range: 90, strength: 26 } },
 };
 
 // Starting loadouts (kits). The server is authoritative: clients may *request*
@@ -40,8 +52,13 @@ const KITS = {
   trooper:    { id: 'trooper',    name: 'Trooper',    price: 400,  desc: 'Triple-shot spread for area suppression.',                            weapons: { standard: -1, triple: 3 } },
   saboteur:   { id: 'saboteur',   name: 'Saboteur',   price: 500,  desc: 'Cluster munitions that scatter on impact.',                           weapons: { standard: -1, cluster: 3 } },
   vanguard:   { id: 'vanguard',   name: 'Vanguard',   price: 650,  desc: 'Rolling charges that chase enemies into cover.',                      weapons: { standard: -1, roller: 3 } },
+  pyro:       { id: 'pyro',       name: 'Pyro',       price: 700,  desc: 'Napalm rounds that leave a lingering blaze.',                         weapons: { standard: -1, napalm: 3 } },
+  artillery:  { id: 'artillery',  name: 'Artillery',  price: 750,  desc: 'Mortar barrage rains shells across a wide span.',                     weapons: { standard: -1, mortar: 3 } },
+  engineer:   { id: 'engineer',   name: 'Engineer',   price: 600,  desc: 'Earthmover charges raise dirt walls for cover.',                      weapons: { standard: -1, earthmover: 4 } },
+  stormcaller:{ id: 'stormcaller',name: 'Stormcaller',price: 850,  desc: 'Lightning that forks to a second nearby enemy.',                      weapons: { standard: -1, lightning: 3 } },
   juggernaut: { id: 'juggernaut', name: 'Juggernaut', price: 1200, special: true, desc: 'A bit of everything heavy. For the well-funded.',      weapons: { standard: -1, big_bomb: 2, roller: 2, cluster: 2 } },
   warlord:    { id: 'warlord',    name: 'Warlord',    price: 1900, special: true, desc: 'Elite arsenal: snipers, triples and big-bombs.',       weapons: { standard: -1, sniper: 3, triple: 3, big_bomb: 2 } },
+  voidlord:   { id: 'voidlord',   name: 'Voidlord',   price: 2200, special: true, desc: 'Black holes that drag tanks into the blast.',           weapons: { standard: -1, blackhole: 2, lightning: 2 } },
 };
 
 // Cosmetic skins. Purely visual; the server stores + relays the chosen id.
@@ -54,11 +71,34 @@ const SKINS = {
   gold:    { id: 'gold',    name: 'Gold Plated',  price: 1500, special: true },
 };
 
-const PICKUP_WEAPONS = ['big_bomb', 'triple', 'cluster', 'roller', 'sniper'];
+const PICKUP_WEAPONS = ['big_bomb', 'triple', 'cluster', 'roller', 'sniper', 'napalm', 'mortar', 'earthmover', 'lightning', 'blackhole'];
 const PICKUP_AMMO = 2;
 const PICKUP_RADIUS = 9;
 const MAX_PICKUPS = 5;
 const PICKUP_CHANCE = 0.75;
+
+// Crate flavours. A weapon crate grants ammo; a health crate heals; a bonus
+// crate (the spinning one) pays coins + a random special weapon top-up.
+const PICKUP_TYPE_WEIGHTS = [
+  { type: 'weapon', w: 0.6 },
+  { type: 'health', w: 0.28 },
+  { type: 'bonus', w: 0.12 },
+];
+const HEALTH_PICKUP_HP = 35;
+const BONUS_PICKUP_COINS = 80;
+const BONUS_PICKUP_AMMO = 2;
+
+// How many full rounds (one turn per player) pass before the terrain "settles".
+const REFORM_ROUNDS = 3;
+
+function pickPickupType() {
+  let r = Math.random();
+  for (const e of PICKUP_TYPE_WEIGHTS) {
+    r -= e.w;
+    if (r <= 0) return e.type;
+  }
+  return 'weapon';
+}
 
 const TEAM_COLORS = ['#4ad9ff', '#ff7a4a'];
 
@@ -70,37 +110,37 @@ const BIOMES = {
     id: 'hills', name: 'Verdant Hills',
     sky: ['#4f93dd', '#86b6e6', '#bcd4ee', '#dfeaf4'], fog: '#bcd4ee',
     low: '#4e9a4e', high: '#84c768', rock: '#7a6a4d', dirt: '#6b4e33', dirtDeep: '#4a3522',
-    water: null, props: ['tree', 'rock', 'barrel', 'crate'], density: 1.0,
+    water: null, props: ['tree', 'rock', 'barrel', 'crate', 'boulder'], density: 1.0,
   },
   desert: {
     id: 'desert', name: 'Dune Sea',
     sky: ['#e7a14b', '#f3c77a', '#f6e3b0', '#fbf0d2'], fog: '#ecd8a6',
     low: '#caa45a', high: '#e8d199', rock: '#b08a4e', dirt: '#a8753c', dirtDeep: '#7c5326',
-    water: null, props: ['cactus', 'rock', 'barrel'], density: 0.7,
+    water: null, props: ['cactus', 'rock', 'barrel', 'arch'], density: 0.7,
   },
   mountains: {
     id: 'mountains', name: 'Frostpeak Range',
     sky: ['#5a7fb0', '#8aa6c8', '#c2d2e4', '#eef4fa'], fog: '#d2dde8',
     low: '#6c7a86', high: '#ffffff', rock: '#5c6770', dirt: '#55606a', dirtDeep: '#3a424a',
-    water: null, props: ['pine', 'rock'], density: 0.8, snowline: 64,
+    water: null, props: ['pine', 'rock', 'boulder'], density: 0.8, snowline: 64,
   },
   islands: {
     id: 'islands', name: 'Coral Archipelago',
     sky: ['#2f8fd0', '#6fb6e0', '#aedcf0', '#dff2fb'], fog: '#bfe2f2',
     low: '#d8c48a', high: '#5fb35a', rock: '#8a7a55', dirt: '#c2a86a', dirtDeep: '#8f7642',
-    water: 20, props: ['palm', 'rock', 'barrel'], density: 0.8,
+    water: 20, props: ['palm', 'rock', 'barrel', 'arch'], density: 0.8,
   },
   valley: {
     id: 'valley', name: 'Riftgreen Valley',
     sky: ['#5b86c4', '#8fb0d8', '#c4d6ea', '#e6eef6'], fog: '#c4d6ea',
     low: '#46913f', high: '#7fbf63', rock: '#6e6048', dirt: '#5e4a30', dirtDeep: '#3f3220',
-    water: null, props: ['tree', 'rock', 'crate', 'barrel'], density: 1.0,
+    water: null, props: ['tree', 'rock', 'crate', 'barrel', 'ruin', 'boulder'], density: 1.0,
   },
   wasteland: {
     id: 'wasteland', name: 'Scorched Wastes',
     sky: ['#7a4b3a', '#a9705a', '#c79a82', '#e0c4ad'], fog: '#c39880',
     low: '#6e4a36', high: '#9a6a44', rock: '#5a4636', dirt: '#4e3826', dirtDeep: '#33241a',
-    water: null, props: ['rock', 'barrel', 'crate'], density: 0.9,
+    water: null, props: ['rock', 'barrel', 'crate', 'ruin', 'arch', 'boulder'], density: 0.9,
   },
 };
 
@@ -200,6 +240,37 @@ function genIslands(water) {
   return hm;
 }
 
+// Bake larger map structure into the heightmap: a few flat-topped mesas with
+// steep shoulders plus the odd linear ramp. These become real, drivable,
+// shootable terrain (not just decoration) so maps read as more built-up.
+function addStructures(hm, water) {
+  const n = hm.length;
+  const floor = water != null ? water + 4 : 6;
+  const mesas = 1 + Math.floor(Math.random() * 3);
+  for (let m = 0; m < mesas; m++) {
+    const c = Math.floor(randf(0.12, 0.88) * n);
+    const half = Math.floor(randf(10, 26));
+    const top = hm[c] + randf(14, 30);
+    for (let i = c - half; i <= c + half; i++) {
+      if (i < 0 || i >= n) continue;
+      const edge = Math.abs(i - c) / half;             // 0 centre … 1 edge
+      const shoulder = edge > 0.78 ? Math.max(0, 1 - (edge - 0.78) / 0.22) : 1;
+      hm[i] = Math.max(hm[i], hm[i] * (1 - shoulder) + top * shoulder);
+    }
+  }
+  const ramps = Math.floor(Math.random() * 2);
+  for (let r = 0; r < ramps; r++) {
+    const start = Math.floor(randf(0.1, 0.7) * n);
+    const len = Math.floor(randf(24, 50));
+    const rise = randf(12, 26) * (Math.random() < 0.5 ? 1 : -1);
+    for (let k = 0; k <= len; k++) {
+      const i = start + k;
+      if (i < 0 || i >= n) continue;
+      hm[i] = Math.max(floor, hm[i] + (k / len) * rise);
+    }
+  }
+}
+
 function generateWorld() {
   const id = BIOME_IDS[Math.floor(Math.random() * BIOME_IDS.length)];
   const biome = BIOMES[id];
@@ -212,6 +283,7 @@ function generateWorld() {
     case 'islands':   hm = genIslands(biome.water); break;
     default:          hm = genHills(); break;
   }
+  if (id !== 'islands') addStructures(hm, biome.water);
   // clamp into the renderable band
   for (let i = 0; i < COLS; i++) hm[i] = clamp(hm[i], 6, 92);
   return { biomeId: id, biome, heightmap: hm };
@@ -252,6 +324,10 @@ const PROP_DEFS = {
   rock:   { r: 3.6, hp: 60 },
   cactus: { r: 2.6, hp: 18 },
   palm:   { r: 4.0, hp: 22 },
+  // larger structural cover pieces
+  boulder: { r: 4.8, hp: 95 },
+  arch:    { r: 5.4, hp: 80 },
+  ruin:    { r: 4.4, hp: 70 },
 };
 
 function randomWind() {
@@ -276,6 +352,9 @@ class Game {
     this.pickupSeq = 0;
     this.propSeq = 0;
     this.rewards = {};
+    this.hazards = [];        // lingering napalm fire zones
+    this.hazardSeq = 0;
+    this.turnsTaken = 0;      // total turns advanced (drives terrain reform)
 
     const layout = spawnLayout(mode);
     const padHeight = this.water != null ? this.water + 12 : null;
@@ -358,6 +437,7 @@ class Game {
       wind: this.wind,
       activePlayerId: this.activePlayerId,
       pickups: this.pickups,
+      hazards: this.hazards,
       weapons: WEAPONS,
       kits: KITS,
       skins: SKINS,
@@ -460,6 +540,8 @@ class Game {
       let trajectory = shot.trajectory;
       let impact = shot.impact;
       let subImpacts = null;
+      let chainImpact = null;   // lightning fork target (for the client bolt)
+      let pulledTanks = null;   // black-hole displacements (for the client swirl)
 
       if (weapon.roller) {
         const roll = physics.rollAlongTerrain(this.world, this.heightmap, impact, weapon.roller.maxDist);
@@ -468,13 +550,45 @@ class Game {
         physics.carveCrater(this.world, this.heightmap, impact, weapon.blastRadius);
         blastProps(impact, weapon.blastRadius, weapon.damage);
         for (const h of physics.applyDamage(this.tanks, impact, weapon.blastRadius, weapon.damage)) rawDamages.push(h);
-      } else if (weapon.cluster) {
-        subImpacts = this.clusterImpacts(impact, weapon.cluster);
+      } else if (weapon.cluster || weapon.mortar) {
+        const cfg = weapon.cluster || weapon.mortar;
+        subImpacts = this.clusterImpacts(impact, cfg);
         for (const si of subImpacts) {
           physics.carveCrater(this.world, this.heightmap, si, si.radius);
-          blastProps(si, si.radius, weapon.cluster.damage);
-          for (const h of physics.applyDamage(this.tanks, si, si.radius, weapon.cluster.damage)) rawDamages.push(h);
+          blastProps(si, si.radius, cfg.damage);
+          for (const h of physics.applyDamage(this.tanks, si, si.radius, cfg.damage)) rawDamages.push(h);
         }
+      } else if (weapon.napalm) {
+        physics.carveCrater(this.world, this.heightmap, impact, weapon.blastRadius);
+        blastProps(impact, weapon.blastRadius, weapon.damage);
+        for (const h of physics.applyDamage(this.tanks, impact, weapon.blastRadius, weapon.damage)) rawDamages.push(h);
+        this.spawnHazard(impact, weapon.napalm, shooterId);
+      } else if (weapon.earth) {
+        // builds a wall instead of a crater; only a light shove of damage
+        physics.raiseMound(this.world, this.heightmap, impact, weapon.earth.radius, weapon.earth.height);
+        blastProps(impact, weapon.blastRadius, weapon.damage);
+        for (const h of physics.applyDamage(this.tanks, impact, weapon.blastRadius, weapon.damage)) rawDamages.push(h);
+      } else if (weapon.chain) {
+        // lightning: strike the impact, then arc to the nearest other enemy
+        physics.carveCrater(this.world, this.heightmap, impact, weapon.blastRadius);
+        blastProps(impact, weapon.blastRadius, weapon.damage);
+        for (const h of physics.applyDamage(this.tanks, impact, weapon.blastRadius, weapon.damage)) rawDamages.push(h);
+        const target = this.nearestEnemyTo(impact, shooter.team, weapon.chain.range);
+        if (target) {
+          const ground = { x: target.x, y: target.y };
+          const centre = { x: target.x, y: target.y + physics.TANK_CENTER_Y };
+          physics.carveCrater(this.world, this.heightmap, ground, weapon.chain.radius);
+          blastProps(ground, weapon.chain.radius, weapon.chain.damage);
+          for (const h of physics.applyDamage(this.tanks, centre, weapon.chain.radius, weapon.chain.damage)) rawDamages.push(h);
+          chainImpact = ground;
+        }
+      } else if (weapon.pull) {
+        // black hole: drag tanks in, then detonate hard at the centre
+        const moved = physics.pullTanks(this.world, this.heightmap, this.tanks, impact, weapon.pull.range, weapon.pull.strength);
+        pulledTanks = moved.map((t) => ({ id: t.id, x: t.x, y: t.y }));
+        physics.carveCrater(this.world, this.heightmap, impact, weapon.blastRadius);
+        blastProps(impact, weapon.blastRadius, weapon.damage);
+        for (const h of physics.applyDamage(this.tanks, impact, weapon.blastRadius, weapon.damage)) rawDamages.push(h);
       } else {
         physics.carveCrater(this.world, this.heightmap, impact, weapon.blastRadius);
         blastProps(impact, weapon.blastRadius, weapon.damage);
@@ -489,6 +603,8 @@ class Game {
         blastRadius: weapon.blastRadius,
         kind: weaponId,
         subImpacts,
+        chainImpact,
+        pulledTanks,
       });
     }
 
@@ -560,16 +676,100 @@ class Game {
   collectPickupsNear(x, tank, collected) {
     for (let n = this.pickups.length - 1; n >= 0; n--) {
       const pk = this.pickups[n];
-      if (Math.abs(pk.x - x) <= PICKUP_RADIUS) {
+      if (Math.abs(pk.x - x) > PICKUP_RADIUS) continue;
+      if (pk.type === 'health') {
+        const before = tank.hp;
+        tank.hp = Math.min(tank.maxHp, tank.hp + HEALTH_PICKUP_HP);
+        collected.push({ tankId: tank.id, type: 'health', heal: tank.hp - before, hp: tank.hp });
+      } else if (pk.type === 'bonus') {
+        if (this.rewards[tank.id]) this.rewards[tank.id].coins += BONUS_PICKUP_COINS;
+        const wid = PICKUP_WEAPONS[Math.floor(Math.random() * PICKUP_WEAPONS.length)];
+        if (tank.weapons[wid] === undefined) tank.weapons[wid] = 0;
+        if (tank.weapons[wid] >= 0) tank.weapons[wid] += BONUS_PICKUP_AMMO;
+        collected.push({ tankId: tank.id, type: 'bonus', coins: BONUS_PICKUP_COINS, weapon: wid, ammo: tank.weapons[wid] });
+      } else {
         if (tank.weapons[pk.weapon] === undefined) tank.weapons[pk.weapon] = 0;
         if (tank.weapons[pk.weapon] >= 0) tank.weapons[pk.weapon] += PICKUP_AMMO;
-        collected.push({ tankId: tank.id, weapon: pk.weapon, ammo: tank.weapons[pk.weapon] });
-        this.pickups.splice(n, 1);
+        collected.push({ tankId: tank.id, type: 'weapon', weapon: pk.weapon, ammo: tank.weapons[pk.weapon] });
       }
+      this.pickups.splice(n, 1);
     }
   }
 
+  // nearest living enemy to a point (used by Lightning's chain), skipping the
+  // tank that already absorbed the primary strike.
+  nearestEnemyTo(point, team, range) {
+    let best = null;
+    let bestD = Infinity;
+    for (const t of this.tanks) {
+      if (!t.alive || t.team === team) continue;
+      const dx = t.x - point.x;
+      const dy = (t.y + physics.TANK_CENTER_Y) - point.y;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d <= 8) continue;          // that's the primary target
+      if (d <= range && d < bestD) { bestD = d; best = t; }
+    }
+    return best;
+  }
+
+  spawnHazard(impact, cfg, ownerId) {
+    this.hazards.push({
+      id: ++this.hazardSeq,
+      x: impact.x,
+      span: cfg.span,
+      turnsLeft: cfg.turns,
+      dmgPerTurn: cfg.dmgPerTurn,
+      ownerId,
+    });
+  }
+
+  // Apply one tick of every active fire zone to the tanks standing in it, then
+  // age the zones out. Returns merged damage records for the broadcast.
+  tickHazards() {
+    const out = [];
+    for (let n = this.hazards.length - 1; n >= 0; n--) {
+      const hz = this.hazards[n];
+      for (const t of this.tanks) {
+        if (!t.alive) continue;
+        if (Math.abs(t.x - hz.x) <= hz.span / 2) {
+          t.hp -= hz.dmgPerTurn;
+          if (t.hp <= 0) { t.hp = 0; t.alive = false; }
+          out.push({ id: t.id, amount: hz.dmgPerTurn, hp: t.hp, dead: !t.alive });
+        }
+      }
+      hz.turnsLeft -= 1;
+      if (hz.turnsLeft <= 0) this.hazards.splice(n, 1);
+    }
+    return mergeDamages(out);
+  }
+
+  // Every few rounds the battlefield "settles": smooth it out and pull heights a
+  // little toward the average so the map gradually becomes more level.
+  levelTerrain() {
+    const hm = this.heightmap;
+    const n = hm.length;
+    let mean = 0;
+    for (let i = 0; i < n; i++) mean += hm[i];
+    mean /= n;
+    for (let pass = 0; pass < 2; pass++) {
+      const src = hm.slice();
+      for (let i = 0; i < n; i++) {
+        const a = src[Math.max(0, i - 1)];
+        const b = src[i];
+        const c = src[Math.min(n - 1, i + 1)];
+        hm[i] = (a + b + c) / 3;
+      }
+    }
+    for (let i = 0; i < n; i++) hm[i] = clamp(hm[i] + (mean - hm[i]) * 0.18, 6, 92);
+    for (const t of this.tanks) { if (t.alive) flattenPad(hm, t.x, 6); }
+    physics.settleTanks(this.world, hm, this.tanks);
+    physics.settleProps(this.world, hm, this.props);
+  }
+
+  // Returns { hazardDamages, terrainReform } so the caller can fold the burn
+  // ticks into the broadcast and flag a settle for the client.
   advanceTurn() {
+    const hazardDamages = this.tickHazards();
     for (let i = 0; i < this.players.length; i++) {
       this.turnIndex = (this.turnIndex + 1) % this.players.length;
       const tank = this.tankOf(this.activePlayerId);
@@ -578,7 +778,16 @@ class Game {
     const next = this.tankOf(this.activePlayerId);
     if (next) next.fuel = MOVE_RANGE;
     this.wind = randomWind();
+
+    this.turnsTaken += 1;
+    let terrainReform = false;
+    if (this.turnsTaken % (this.players.length * REFORM_ROUNDS) === 0) {
+      this.levelTerrain();
+      terrainReform = true;
+    }
+
     this.maybeSpawnPickup();
+    return { hazardDamages, terrainReform };
   }
 
   maybeSpawnPickup() {
@@ -589,12 +798,12 @@ class Game {
       x = (0.1 + Math.random() * 0.8) * (COLS - 1);
       y = physics.heightAt(this.world, this.heightmap, x);
     } while (this.water != null && y < this.water + 2 && guard++ < 12);
-    this.pickups.push({
-      id: ++this.pickupSeq,
-      x,
-      y,
-      weapon: PICKUP_WEAPONS[Math.floor(Math.random() * PICKUP_WEAPONS.length)],
-    });
+    const type = pickPickupType();
+    const pk = { id: ++this.pickupSeq, x, y, type };
+    if (type === 'weapon') {
+      pk.weapon = PICKUP_WEAPONS[Math.floor(Math.random() * PICKUP_WEAPONS.length)];
+    }
+    this.pickups.push(pk);
   }
 
   // Final per-player payouts once the match ends.

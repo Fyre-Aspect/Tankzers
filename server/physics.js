@@ -5,6 +5,7 @@ const TANK_RADIUS = 5;
 const TANK_CENTER_Y = 3;
 const MAX_STEPS = 6000;
 const MIN_HEIGHT = 0;
+const MAX_HEIGHT = 92; // renderable ceiling (matches the clamp band in game.js)
 const BOUNDS_MARGIN = 200;
 
 function clampX(world, x) {
@@ -131,6 +132,39 @@ function carveCrater(world, hm, impact, radius) {
   }
 }
 
+// Earthmover: raise the terrain into a feathered hump (the inverse of a crater).
+// Uses a cosine bell so the wall has rounded shoulders instead of a hard spike.
+function raiseMound(world, hm, impact, radius, height) {
+  const i0 = Math.max(0, Math.floor(impact.x - radius));
+  const i1 = Math.min(world.cols - 1, Math.ceil(impact.x + radius));
+  for (let i = i0; i <= i1; i++) {
+    const dx = (i - impact.x) / radius;
+    if (dx < -1 || dx > 1) continue;
+    const lift = height * 0.5 * (1 + Math.cos(dx * Math.PI));
+    hm[i] = Math.min(MAX_HEIGHT, hm[i] + lift);
+  }
+}
+
+// Black hole: drag living tanks toward the impact point before it detonates.
+// Returns the tanks that actually moved (re-grounded) so the caller can broadcast
+// their new positions.
+function pullTanks(world, hm, tanks, impact, range, strength) {
+  const moved = [];
+  for (const t of tanks) {
+    if (!t.alive) continue;
+    const dx = impact.x - t.x;
+    const dist = Math.abs(dx);
+    if (dist < 0.5 || dist > range) continue;
+    const pull = strength * (1 - dist / range);
+    const nx = clampX(world, t.x + Math.sign(dx) * Math.min(pull, dist));
+    if (Math.abs(nx - t.x) < 0.01) continue;
+    t.x = nx;
+    t.y = heightAt(world, hm, nx);
+    moved.push(t);
+  }
+  return moved;
+}
+
 function applyDamage(tanks, impact, radius, maxDamage) {
   const damages = [];
   for (const t of tanks) {
@@ -198,6 +232,8 @@ module.exports = {
   simulateProjectile,
   rollAlongTerrain,
   carveCrater,
+  raiseMound,
+  pullTanks,
   applyDamage,
   applyDamageToProps,
   settleTanks,

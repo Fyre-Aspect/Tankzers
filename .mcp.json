@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "genouk-memory": {
+      "command": "node",
+      "args": [
+        "c:\\Users\\aamir\\.vscode\\extensions\\genouk-dev.genouk-1.0.1\\dist\\mcpServer.js"
+      ],
+      "env": {
+        "GENOUK_REPO": "c:\\Users\\aamir\\Coding\\Tankzers"
+      }
+    }
+  }
+}

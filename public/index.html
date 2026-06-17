@@ -20,6 +20,24 @@
 <body>
   <div id="scene"></div>
 
+  <!-- 3D backdrop behind the menus: two large tanks flanking the panels -->
+  <div id="menu-bg" class="hidden"></div>
+
+  <!-- transient banner (e.g. terrain reform) -->
+  <div id="toast"></div>
+
+  <!-- weapon-crate opening spinner (slot-machine reel) -->
+  <div id="crate-open" class="hidden">
+    <div class="co-box">
+      <div class="co-title">CRATE OPENED</div>
+      <div class="co-window" id="co-window">
+        <div class="co-pointer"></div>
+        <div class="co-reel" id="co-reel"></div>
+      </div>
+      <div class="co-result" id="co-result"></div>
+    </div>
+  </div>
+
   <!-- ============ in-game HUD ============ -->
   <div id="hud">
     <div class="hud-box" id="hud-turn">Connecting…</div>

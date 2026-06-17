@@ -10,8 +10,13 @@ export const KITS = {
   trooper:    { id: 'trooper',    name: 'Trooper',    price: 400,  desc: 'Triple-shot spread for area suppression.',              loadout: 'Standard ∞ · Triple ×3' },
   saboteur:   { id: 'saboteur',   name: 'Saboteur',   price: 500,  desc: 'Cluster munitions that scatter on impact.',             loadout: 'Standard ∞ · Cluster ×3' },
   vanguard:   { id: 'vanguard',   name: 'Vanguard',   price: 650,  desc: 'Rolling charges that chase enemies into cover.',        loadout: 'Standard ∞ · Roller ×3' },
+  pyro:       { id: 'pyro',       name: 'Pyro',       price: 700,  desc: 'Napalm rounds that leave a lingering blaze.',          loadout: 'Standard ∞ · Napalm ×3' },
+  artillery:  { id: 'artillery',  name: 'Artillery',  price: 750,  desc: 'Mortar barrage rains shells across a wide span.',      loadout: 'Standard ∞ · Mortar ×3' },
+  engineer:   { id: 'engineer',   name: 'Engineer',   price: 600,  desc: 'Earthmover charges raise dirt walls for cover.',       loadout: 'Standard ∞ · Earthmover ×4' },
+  stormcaller:{ id: 'stormcaller',name: 'Stormcaller',price: 850,  desc: 'Lightning that forks to a second nearby enemy.',       loadout: 'Standard ∞ · Lightning ×3' },
   juggernaut: { id: 'juggernaut', name: 'Juggernaut', price: 1200, special: true, desc: 'A bit of everything heavy.',            loadout: 'Big Bomb ×2 · Roller ×2 · Cluster ×2' },
   warlord:    { id: 'warlord',    name: 'Warlord',    price: 1900, special: true, desc: 'Elite arsenal of snipers and bombs.',   loadout: 'Sniper ×3 · Triple ×3 · Big Bomb ×2' },
+  voidlord:   { id: 'voidlord',   name: 'Voidlord',   price: 2200, special: true, desc: 'Black holes that drag tanks into the blast.', loadout: 'Black Hole ×2 · Lightning ×2' },
 };
 
 export const SKINS = {
@@ -37,6 +42,11 @@ export const WEAPON_FX = {
   triple:   { proj: 0xffd24a, boom: 0xffd24a },
   cluster:  { proj: 0xff5ad2, boom: 0xff7ad2 },
   roller:   { proj: 0x8aff6a, boom: 0x9aff7a },
+  napalm:    { proj: 0xff7a2a, boom: 0xff5a1a },
+  mortar:    { proj: 0xe0c24a, boom: 0xe0a84a },
+  earthmover:{ proj: 0xc79a5a, boom: 0x8a6536 },
+  lightning: { proj: 0x9fe8ff, boom: 0xeaf6ff },
+  blackhole: { proj: 0xb48aff, boom: 0x7a4ad9 },
 };
 
 export function defaultProfile() {

@@ -188,19 +188,31 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const aliveTeams = room.game.aliveTeams();
+    let damages = result.damages;
     let next;
-    if (aliveTeams.size <= 1) {
+    if (room.game.aliveTeams().size <= 1) {
+      const aliveTeams = room.game.aliveTeams();
       const winnerTeam = aliveTeams.size === 1 ? [...aliveTeams][0] : null;
       next = { type: 'gameOver', winnerTeam, rewards: room.game.finalRewards(winnerTeam) };
     } else {
-      room.game.advanceTurn();
-      next = {
-        type: 'turn',
-        activePlayerId: room.game.activePlayerId,
-        wind: room.game.wind,
-        pickups: room.game.pickups,
-      };
+      // advanceTurn may apply lingering napalm damage and settle the terrain.
+      const adv = room.game.advanceTurn();
+      if (adv.hazardDamages && adv.hazardDamages.length) damages = damages.concat(adv.hazardDamages);
+      // a burn tick may have just ended the match
+      const after = room.game.aliveTeams();
+      if (after.size <= 1) {
+        const winnerTeam = after.size === 1 ? [...after][0] : null;
+        next = { type: 'gameOver', winnerTeam, rewards: room.game.finalRewards(winnerTeam) };
+      } else {
+        next = {
+          type: 'turn',
+          activePlayerId: room.game.activePlayerId,
+          wind: room.game.wind,
+          pickups: room.game.pickups,
+          hazards: room.game.hazards,
+          terrainReform: adv.terrainReform,
+        };
+      }
     }
 
     io.to(code).emit('shotResolved', {
@@ -210,7 +222,8 @@ io.on('connection', (socket) => {
       heightmap: room.game.heightmap,
       tanks: room.game.tanks,
       props: room.game.props,
-      damages: result.damages,
+      hazards: room.game.hazards,
+      damages,
       heals: result.heals,
       destroyedProps: result.destroyedProps,
       collected: result.collected,
