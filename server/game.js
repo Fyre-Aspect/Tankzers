@@ -334,6 +334,21 @@ function randomWind() {
   return Math.round((Math.random() * 2 - 1) * 10);
 }
 
+// Muzzle kinematics for a shot — the single source of truth shared by Game.fire
+// and the bot's aim search, so a predicted trajectory matches the real one exactly.
+function shotKinematics(shooter, angleDeg, weapon, power) {
+  const rad = (angleDeg * Math.PI) / 180;
+  const dir = { x: Math.cos(rad), y: Math.sin(rad) };
+  const speed = power * physics.POWER_SCALE * weapon.powerMult;
+  return {
+    origin: {
+      x: shooter.x + dir.x * BARREL_LENGTH,
+      y: shooter.y + TURRET_HEIGHT + dir.y * BARREL_LENGTH,
+    },
+    velocity: { x: dir.x * speed, y: dir.y * speed },
+  };
+}
+
 class Game {
   // players: array of { id, name, kit, color, skin }
   constructor(players, mode) {
@@ -516,7 +531,6 @@ class Game {
     const rawDamages = [];
     const collected = [];
     let propsDestroyed = 0;
-    const speed = power * physics.POWER_SCALE * weapon.powerMult;
 
     const blastProps = (impact, radius, damage) => {
       const killed = physics.applyDamageToProps(this.props, impact, radius, damage);
@@ -525,13 +539,7 @@ class Game {
 
     for (let k = 0; k < weapon.projectiles; k++) {
       const offset = (k - (weapon.projectiles - 1) / 2) * weapon.spread;
-      const rad = ((angle + offset) * Math.PI) / 180;
-      const dir = { x: Math.cos(rad), y: Math.sin(rad) };
-      const origin = {
-        x: shooter.x + dir.x * BARREL_LENGTH,
-        y: shooter.y + TURRET_HEIGHT + dir.y * BARREL_LENGTH,
-      };
-      const velocity = { x: dir.x * speed, y: dir.y * speed };
+      const { origin, velocity } = shotKinematics(shooter, angle + offset, weapon, power);
 
       const shot = physics.simulateProjectile(
         this.world, this.heightmap, this.tanks, this.props, shooterId, origin, velocity, this.wind
@@ -854,4 +862,4 @@ function sanitizeProfile(p) {
   };
 }
 
-module.exports = { Game, WEAPONS, KITS, SKINS, capacityFor, sanitizeProfile }
+module.exports = { Game, WEAPONS, KITS, SKINS, capacityFor, sanitizeProfile, shotKinematics }
