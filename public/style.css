@@ -402,6 +402,8 @@ h3.section::after { content: ''; flex: 1; height: 2px; border-radius: 2px; backg
 .btn-primary:not(:disabled):active { box-shadow: 0 1px 0 #2c7a2c, 0 2px 6px rgba(58, 155, 58, 0.35); }
 .btn-alt { background: linear-gradient(180deg, #ffb867, var(--gold-deep)); color: #3a2300; box-shadow: 0 5px 0 #a85f12, 0 8px 16px rgba(207, 122, 23, 0.35); }
 .btn-alt:not(:disabled):active { box-shadow: 0 1px 0 #a85f12, 0 2px 6px rgba(207, 122, 23, 0.35); }
+.btn-bot { background: linear-gradient(180deg, #b79cf0, #7d57d6); color: #fff; box-shadow: 0 5px 0 #5b3aa8, 0 8px 16px rgba(125, 87, 214, 0.32); }
+.btn-bot:not(:disabled):active { box-shadow: 0 1px 0 #5b3aa8, 0 2px 6px rgba(125, 87, 214, 0.32); }
 .btn-google { background: #fff; color: #1a1a1a; box-shadow: 0 5px 0 #c2c9d4, 0 8px 16px rgba(42,49,66,0.18); }
 .btn-google:not(:disabled):active { box-shadow: 0 1px 0 #c2c9d4; }
 .btn-google .g { font-weight: 900; color: #4285f4; }

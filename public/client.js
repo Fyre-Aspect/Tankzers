@@ -1959,6 +1959,10 @@ $('btn-quick').addEventListener('click', () => {
   $('queue-status').textContent = 'Searching for an opponent…';
   showScreen('screen-queue');
 });
+$('btn-bot').addEventListener('click', () => {
+  socket.emit('botMatch', { mode: selectedMode, profile: profilePayload() });
+  $('menu-msg').textContent = 'Deploying practice match…';
+});
 $('btn-cancel-queue').addEventListener('click', () => {
   socket.emit('cancelQuickMatch');
   enterMenu();
