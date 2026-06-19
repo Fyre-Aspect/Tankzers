@@ -1547,7 +1547,15 @@ function applyCollected(collected) {
   if (healed) refreshTeams();
 }
 
-socket.on('tankMoved', ({ id, x, y, fuel, collected, pickups }) => {
+socket.on('tankMoved', (data) => {
+  // A bot drives then fires on its turn, so its drive has to wait behind any shot
+  // that's still playing — otherwise the tank slides while the previous shell is
+  // mid-air and snaps back when that shot finally resolves.
+  if (anim) { eventQueue.push({ kind: 'move', data }); return; }
+  applyMove(data);
+});
+
+function applyMove({ id, x, y, fuel, collected, pickups }) {
   const t = state.tanks.find((s) => s.id === id);
   if (t) { t.x = x; t.y = y; t.fuel = fuel; }
   state.pickups = pickups;
@@ -1564,7 +1572,7 @@ socket.on('tankMoved', ({ id, x, y, fuel, collected, pickups }) => {
   if (collected.length) buildWeapons();
   refreshFuel();
   updateControls();
-});
+}
 
 socket.on('shotResolved', (data) => {
   // A shot already playing must finish before the next one starts, otherwise a
@@ -1589,10 +1597,13 @@ function beginShot(data) {
 }
 
 // Once the current shot has fully resolved, play whatever queued up behind it.
+// Moves apply instantly so we keep draining until a shot takes over the screen.
 function drainQueue() {
-  if (anim || state.gameOver || !eventQueue.length) return;
-  const ev = eventQueue.shift();
-  if (ev.kind === 'shot') beginShot(ev.data);
+  while (!anim && !state.gameOver && eventQueue.length) {
+    const ev = eventQueue.shift();
+    if (ev.kind === 'shot') beginShot(ev.data);
+    else if (ev.kind === 'move') applyMove(ev.data);
+  }
 }
 
 socket.on('opponentLeft', ({ message }) => {
