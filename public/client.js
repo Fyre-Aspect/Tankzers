@@ -68,6 +68,10 @@ const state = {
 let selectedMode = '1v1';
 let anim = null;
 let pending = null;
+// Server play-events (shots) that arrived while a shot was still animating.
+// Bots fire on a fixed timer, so their shot can land here before yours has
+// finished playing — we hold it until the current animation resolves.
+let eventQueue = [];
 
 const TERRAIN_DEPTH = 30;
 const BASE_Y = -70;
@@ -1450,7 +1454,7 @@ function cleanupGame() {
   explosions.length = 0;
   for (const f of floaters) { scene.remove(f.spr); f.spr.material.map.dispose(); f.spr.material.dispose(); }
   floaters.length = 0;
-  anim = null; pending = null; trailPoints = [];
+  anim = null; pending = null; eventQueue = []; trailPoints = [];
   projectileMesh.visible = false; projLight.intensity = 0; trail.visible = false;
   clearAllTrails(); // FIX: clear EVERY player's trail — only here, at the start of a new round/match
 }
@@ -1563,6 +1567,13 @@ socket.on('tankMoved', ({ id, x, y, fuel, collected, pickups }) => {
 });
 
 socket.on('shotResolved', (data) => {
+  // A shot already playing must finish before the next one starts, otherwise a
+  // bot's fast follow-up overwrites your shot mid-flight and the turn is lost.
+  if (anim) { eventQueue.push({ kind: 'shot', data }); return; }
+  beginShot(data);
+});
+
+function beginShot(data) {
   pending = data;
   // FIX: keep data.shooterId on the anim so the finished shot is attributed to the
   // correct player's trail (was anonymous before).
@@ -1575,7 +1586,14 @@ socket.on('shotResolved', (data) => {
   updateControls();
   const ref = tankMeshes.get(data.shooterId);
   if (ref) ref.flashT = 0.12;
-});
+}
+
+// Once the current shot has fully resolved, play whatever queued up behind it.
+function drainQueue() {
+  if (anim || state.gameOver || !eventQueue.length) return;
+  const ev = eventQueue.shift();
+  if (ev.kind === 'shot') beginShot(ev.data);
+}
 
 socket.on('opponentLeft', ({ message }) => {
   state.gameOver = true;
@@ -1784,6 +1802,7 @@ function stepAnim(dt) {
         addShotTrail(anim.shooterId, anim.projectiles); // FIX: append to this shooter's own trail (per-player, persists)
         anim = null;
         applyPending();
+        drainQueue();
       }
       else { anim.phase = 'fly'; anim.prog = 0; trailPoints = []; }
     }
